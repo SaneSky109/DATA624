@@ -1,0 +1,343 @@
+---
+title: 'DATA624: Homework 3'
+author: "Eric Lehmphul"
+date: "2/16/2023"
+output: 
+  rmdformats::readthedown:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(fpp3)
+```
+
+
+# Task
+
+Do exercises 5.1, 5.2, 5.3, 5.4 and 5.7 in the Hyndman book.  Please submit your Rpubs link as well as your .rmd file with your code.
+
+
+# Exercises
+
+
+## 5.1
+
+**Produce forecasts for the following series using whichever of NAIVE(y), SNAIVE(y) or RW(y ~ drift()) is more appropriate in each case:**
+
+
+* **Australian Population (global_economy)**
+
+* **Bricks (aus_production)**
+
+* **NSW Lambs (aus_livestock)**
+
+* **Household wealth (hh_budget).**
+
+* **Australian takeaway food turnover (aus_retail).**
+
+
+### Australian Population (global_economy)
+
+Drift works well with trended data.
+
+```{r}
+aus_economy <- global_economy %>%
+    filter(Code == "AUS")
+
+aus_economy %>%
+  model(Drift = RW(Population ~ drift())) %>%
+  forecast(h = 15) %>%
+  autoplot(aus_economy) +
+    labs(title = "Australian Population Forcast")
+```
+
+
+
+### Bricks (aus_production)
+
+Seasonality is present in this timeseries, therefore seasonal naive models will work well.
+
+```{r}
+summary(aus_production$Bricks)
+```
+
+```{r}
+aus_production %>%
+  filter(!is.na(Bricks)) %>%
+  model(SNAIVE(Bricks ~ lag("year"))) %>%
+  forecast(h = 15) %>%
+  autoplot(aus_production) +
+    labs(title = "Australian Bricks Production Forcast")
+```
+
+
+### NSW Lambs (aus_livestock)
+
+Seasonal naive model will be effective as there is seasonality.
+
+```{r}
+levels(aus_livestock$Animal)
+
+levels(aus_livestock$State)
+```
+
+
+
+```{r}
+aus_livestock %>% 
+  filter(State == "New South Wales",
+         Animal == "Lambs") %>%
+  model(snaive = SNAIVE(Count ~ lag("year"))) %>%
+  forecast(h = 15) %>%
+  autoplot(aus_livestock) +
+    labs(title = "New South Wales Lambs Forcast")
+```
+
+
+
+### Household wealth (hh_budget).
+
+The data has a slightly positive trend, therefore Drift models will be effective.
+
+```{r}
+hh_budget %>%
+  model(Drift = RW(Wealth ~ drift())) %>%
+  forecast(h = 15) %>%
+  autoplot(hh_budget) +
+    labs(title = "Household wealth Forcast")
+```
+
+
+
+### Australian takeaway food turnover (aus_retail).
+
+Looks to have seasonality, SNAIVE will work well.
+
+```{r}
+unique(aus_retail$Industry)
+
+unique(aus_retail$State)
+```
+
+
+```{r}
+aus_retail %>%
+  filter(State == "South Australia",
+         Industry == 'Takeaway food services') %>%
+  model(SNAIVE(Turnover ~ lag("year"))) %>%
+  forecast(h = 15) %>%
+  autoplot(aus_retail) +
+    labs(title = "South Australian takeaway food turnover Forcast")
+```
+
+
+
+## 5.2
+
+**Use the Facebook stock price (data set gafa_stock) to do the following:**
+
+* Produce a time plot of the series.
+
+* Produce forecasts using the drift method and plot them.
+
+* Show that the forecasts are identical to extending the line drawn between the first and last observations.
+
+* Try using some of the other benchmark functions to forecast the same data set. Which do you think is best? Why?
+
+
+
+### Produce a time plot of the series.
+
+```{r}
+fb_data <- gafa_stock %>%
+  filter(Symbol == "FB")
+
+fb_data2 <- as_tsibble(fb_data, key = "Symbol", index = "Date", regular = TRUE) %>% fill_gaps()
+
+autoplot(fb_data, Close)
+```
+
+### Produce forecasts using the drift method and plot them.
+
+```{r}
+fb_data2 %>%
+model(Drift = RW(Close ~ drift())) %>%
+  forecast(h = 30) %>%
+  autoplot(fb_data) +
+    labs(title = "Facebook Close Price Forcast")
+  
+```
+
+
+
+### Show that the forecasts are identical to extending the line drawn between the first and last observations.
+
+The line between the first and last observations does match the forecasts.
+
+```{r}
+df <- data.frame(x1 = as.Date('2014-01-02'), x2 = as.Date('2018-12-31'), y1 = 54.71, y2 = 131.09)
+
+fb_data2 %>%
+model(Drift = RW(Close ~ drift())) %>%
+  forecast(h = 90) %>%
+  autoplot(fb_data) +
+    labs(title = "Facebook Close Price Forcast") +
+  geom_segment(aes(x = x1, y = y1, xend = x2, yend = y2, colour = "segment"), data = df)
+```
+
+
+### Try using some of the other benchmark functions to forecast the same data set. Which do you think is best? Why?
+
+```{r}
+fb_data2 %>%
+  model(
+      Mean = MEAN(Close),
+      Naive = NAIVE(Close),
+      Drift = RW(Close ~ drift())
+  ) %>%
+  forecast(h = 90) %>%
+  autoplot(fb_data2) +
+    labs(title = "South Australian takeaway food turnover Forcast")
+```
+
+
+The best forecast for this dataset is the naive benchmark, as it has the smallest prediction interval.
+
+## 5.3
+
+**Apply a seasonal naïve method to the quarterly Australian beer production data from 1992. Check if the residuals look like white noise, and plot the forecasts. The following code will help.**
+
+
+```{r}
+# Extract data of interest
+recent_production <- aus_production %>%
+  filter(year(Quarter) >= 1992)
+# Define and estimate a model
+fit <- recent_production %>% model(SNAIVE(Beer))
+# Look at the residuals
+fit %>% gg_tsresiduals()
+# Look a some forecasts
+fit %>% forecast() %>% autoplot(recent_production)
+```
+
+
+**What do you conclude?**
+
+The acf plot shows that there are lags that have significant autocorrelation, specifically lag 4, meaning that white noise is not present. Another takeaway is that the forecast appears to be overestimating the future beer production as there is a decreasing trend. 
+
+
+## 5.4
+
+**Repeat the previous exercise using the Australian Exports series from global_economy and the Bricks series from aus_production. Use whichever of NAIVE() or SNAIVE() is more appropriate in each case.**
+
+### Australian Exports
+
+```{r}
+# Extract data of interest
+aus_economy <- global_economy %>%
+    filter(Country == "Australia") 
+# Define and estimate a model
+fit <- aus_economy %>% model(NAIVE(Exports))
+# Look at the residuals
+fit %>% gg_tsresiduals()
+# Look a some forecasts
+fit %>% forecast() %>% autoplot(aus_economy)
+```
+
+```{r}
+mean(augment(fit)$.innov , na.rm = TRUE)
+```
+
+As all lags are close/within to the dashed line it is likely that white noise is present. The mean of the innovation residuals is very small, indicating the forecast is not bias.
+
+### Bricks
+
+
+```{r}
+fit <- aus_production %>%
+  filter(!is.na(Bricks)) %>%
+  model(SNAIVE(Bricks ~ lag("year")))
+# Look at the residuals
+fit %>% gg_tsresiduals()
+# Look a some forecasts
+fit %>% forecast() %>% autoplot(aus_production)
+```
+
+```{r}
+mean(augment(fit)$.innov , na.rm = TRUE)
+```
+
+
+There appears to be high autocorrelation between multiple lags, with the presence of a clear seasonal pattern. The innovation residuals indicate that the forecast is bias (large mean). The histogram also indicates that the model is not ideal for this timeseries.
+
+
+
+## 5.7
+
+**For your retail time series (from Exercise 8 in Section 2.10):**
+
+### a. Create a training dataset consisting of observations before 2011 using code below
+
+```{r}
+set.seed(15)
+
+myseries <- aus_retail %>%
+  filter(`Series ID` == sample(aus_retail$`Series ID`,1))
+
+myseries_train <- myseries %>%
+  filter(year(Month) < 2011)
+```
+
+
+### b. Check that your data have been split appropriately by producing the following plot.
+
+```{r}
+autoplot(myseries, Turnover) +
+  autolayer(myseries_train, Turnover, colour = "red")
+```
+
+
+### c. Fit a seasonal naïve model using SNAIVE() applied to your training data (myseries_train).
+
+```{r}
+fit <- myseries_train %>%
+  model(SNAIVE(Turnover))
+```
+
+
+### d. Check the residuals.
+
+```{r}
+fit %>% gg_tsresiduals()
+```
+
+The residuals are autocorrelated and do not follow a normal distribution (right tailed).
+
+### e. Produce forecasts for the test data 
+
+```{r}
+fc <- fit %>%
+  forecast(new_data = anti_join(myseries, myseries_train))
+fc %>% autoplot(myseries)
+```
+
+
+### f. Compare the accuracy of your forecasts against the actual values.
+
+
+```{r}
+fit %>% fabletools::accuracy() %>% select(MAE, RMSE, MAPE, MASE, RMSSE)
+fc %>% fabletools::accuracy(myseries) %>% select(MAE, RMSE, MAPE, MASE, RMSSE)
+```
+
+The forecast model performs poorly on the test data. All comparison metrics are much worse on the test set compared tot he training set. The MAPE for the test set is 2 times larger than that of the training set, indicating that it is twice as bad at fitting the data compared to the training. The MAE, RMSE, MASE, and RMSSE are magnitudes worse to the training set.
+
+### g. How sensitive are the accuracy measures to the amount of training data used?
+
+The accuracy measures are highly sensitive to the train/test split. Including more or less data in training will change the forecast, and in turn change the accuracy measurements.
