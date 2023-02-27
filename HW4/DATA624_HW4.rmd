@@ -1,0 +1,248 @@
+---
+title: 'DATA624: Homework 4'
+author: "Eric Lehmphul"
+date: "2/25/2023"
+output: 
+  rmdformats::readthedown:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=F, message=F}
+library(tidyverse)
+library(GGally)
+library(corrplot)
+library(ggpubr)
+library(naniar)
+library(mice)
+```
+
+
+# Task
+
+Do problems 3.1 and 3.2 in the Kuhn and Johnson book Applied Predictive Modeling.  Please submit your Rpubs link along with your .rmd code.
+
+
+# 3.1 
+
+The UC Irvine Machine Learning Repository6 contains a data set related to glass identification. The data consist of 214 glass samples labeled as one of seven class categories. There are nine predictors, including the refractive index and percentages of eight elements: Na, Mg, Al, Si, K, Ca, Ba, and Fe. The data can be accessed via:
+
+
+```{r}
+library(mlbench)
+
+data(Glass)
+
+str(Glass)
+```
+
+
+### (a) Using visualizations, explore the predictor variables to understand their distributions as well as the relationships between predictors.
+
+
+
+#### Numeric Data
+
+* Al - right skewed
+* Ba - right skewed, outlier
+* Ca - right skewed, outlier
+* Fe - right skewed, outlier
+* K - right skewed, outlier, bimodal
+* Mg - left skewed, bimodal
+* Na - Close to near normal
+* RI - right skewed
+* Si - left skewed
+
+```{r}
+Glass %>% 
+  gather(-c(Type), key = variable, value = value) %>%
+  ggplot(., aes(x = value)) +
+  geom_histogram(aes(x=value, y = ..density..), bins = 30, fill="#69b3a2", color="#e9ecef") +
+  geom_density(aes(x=value), color='red', lwd = 1.25) +
+  facet_wrap(~variable, scales ="free", ncol = 3) +
+  ggtitle("Distribution of Numeric Data")
+```
+
+
+##### Correlation Matrix
+
+Most of the variables have an inverse relationship. 
+
+* Strong Negative Relationships
+  - Ca / Mg
+  - RI / Si
+  - RI / Al
+  - Mg / Al
+  - Mg / Ba
+
+* Strong Positive Relationships
+  - Ca / RI
+  - K / Al
+  - Al / Ba
+  - Na / Ba
+
+```{r}
+num.data <- Glass[,-c(10)]
+corrplot(cor(num.data), method = 'shade', order = 'AOE',col= colorRampPalette(c("red","tan", "blue"))(10) , type = 'lower', diag = FALSE)
+```
+
+#### Categorical Data
+
+
+```{r}
+Glass %>%
+  ggplot(aes(x = Type)) + geom_histogram(stat="count", fill="#69b3a2", color="#e9ecef") +
+  ggtitle("Distribution of Categorical Variable - Type")
+```
+
+
+### (b) Do there appear to be any outliers in the data? Are any predictors skewed?
+
+There does appear to be ouliers in some of the variables in the dataset. `Ba`, `Ca`, `Fe`, `K`, `Mg`, and `Na` appear to have observations that are outliers to the rest of the variable. There are also predictors that have a skewed data distribution. `Ca`, `Ba`, `Na`, and `RI` are right skewed. `Mg` and `Si` are left skewed.
+
+### (c) Are there any relevant transformations of one or more predictors that might improve the classification model?
+
+Transformations like Box-Cox, log, square root, and inverse can improve the data distributions of heavily skewed data. Variables like `Ba` and `Fe` may benefit from a log transformation as they are heavy right skews. Lesser skews can maybe benefit from a square root transformation. `Mg` can maybe be improved via a square root transformation. The transformation below shows that it improved slightly but still suffers from the bimodal nature of the variable. Another technique that could be used is Centering and Scaling to normalize the inputs. Certain models are sensitive to input scale and require center scaling to successfully train the model. Removing variables that may have multicollinarity can prove beneficial to the model. `RI` appears to be highly correlated with multiple predictor variables that could indicate that multicollinarity exists. It may be best to remove `RI`. 
+
+```{r, echo=FALSE, results='hide'}
+b <- ggplot(Glass, aes(x = sqrt(Mg))) +
+  geom_histogram(aes(x = sqrt(Mg)), fill="#69b3a2", color="#e9ecef") +
+  ggtitle("Na: Log Transform")
+
+
+a<- ggplot(Glass, aes(x = Mg)) +
+  geom_histogram(aes(x = Mg), fill="#69b3a2", color="#e9ecef") +
+  ggtitle("Na: Original")
+
+
+ggarrange(a, b, ncol = 2)
+```
+
+# 3.2 
+
+The soybean data can also be found at the UC Irvine Machine Learning Repository. Data were collected to predict disease in 683 soybeans. The 35 predictors are mostly categorical and include information on the environmental conditions (e.g., temperature, precipitation) and plant conditions (e.g., left spots, mold growth). The outcome labels consist of 19 distinct classes.
+
+
+The data can be loaded via:
+
+```{r}
+library(mlbench)
+data(Soybean)
+## See ?Soybean for details
+```
+  
+### (a) Investigate the frequency distributions for the categorical predictors. Are any of the distributions degenerate in the ways discussed earlier in this chapter?
+
+Looking at the data, `mycelium` appears to have a degenerate distribution. `mycelium` only contains 6 observations with the value 1 and 639 with the value 0, providing very little information about how `mycelium` is changes the target variable when it equals 0. For this reason it is best to remove the variable. 
+
+```{r}
+count = 0 
+for(i in 1:length(names(Soybean))){
+  if(is.factor(Soybean[,i])){
+    count = count + 1
+  }
+  
+  
+}
+
+paste0("Of the 36 variables in Soybean, ", count, " are categorical predictors.")
+```
+
+
+```{r}
+summary(Soybean)
+```
+
+### (b) Roughly 18% of the data are missing. Are there particular predictors that are more likely to be missing? Is the pattern of missing data related to the classes?
+
+The variables with the most missing data are `hail`, `lodging`, `seed.tmt`, and `sever`. There appears to be a pattern to the missing data. Many variables have about the same percentage of missing data. It is possible that many missing data in variables overlap. There also appears to be patterns in the missing data when split by the class variable. The levels `2-4-d-injury`, `cyst-nematode`, `diaporthe-pod-&-stem-blight`, and `herbicide-injury` are missing 100% of values for most of the variables. `phytophthora-rot` is missing 75% of data for most variables. 
+
+```{r}
+missing.values <- Soybean %>%
+  gather(key = "key", value = "val") %>%
+  mutate(isna = is.na(val)) %>%
+  group_by(key) %>%
+  mutate(total = n()) %>%
+  group_by(key, total, isna) %>%
+  summarise(num.isna = n()) %>%
+  mutate(pct = num.isna / total * 100)
+
+
+levels <-
+    (missing.values  %>% filter(isna == T) %>% arrange(desc(pct)))$key
+
+percentage.plot <- missing.values %>%
+      ggplot() +
+        geom_bar(aes(x = reorder(key, desc(pct)), 
+                     y = pct, fill=isna), 
+                 stat = 'identity', alpha=0.8) +
+      scale_x_discrete(limits = levels) +
+      scale_fill_manual(name = "", 
+                        values = c('steelblue', 'tomato3'), labels = c("Present", "Missing")) +
+      coord_flip() +
+      labs(title = "Percentage of missing values", x =
+             'Variable', y = "% of missing values")
+
+percentage.plot
+```
+
+
+
+
+```{r}
+gg_miss_fct(x = Soybean, fct = Class)
+```
+
+
+### (c) Develop a strategy for handling missing data, either by eliminating predictors or imputation.
+
+
+Dropping rows with missing data is not always the best solution. In many cases imputing is effective, as deleting data could cause the loss of important information that is needed to generalize to an unknown population. To handle the missing values I will us the MICE imputation algorithm to generate data.
+
+```{r, cache=TRUE, results='hide'}
+imputed_Data <- mice(Soybean, m=2, maxit = 10, method = 'pmm', seed = 15)
+```
+
+
+```{r}
+completed.data <- complete(imputed_Data, 2)
+```
+
+
+```{r}
+summary(completed.data)
+```
+
+
+```{r}
+missing.values <- completed.data %>%
+  gather(key = "key", value = "val") %>%
+  mutate(isna = is.na(val)) %>%
+  group_by(key) %>%
+  mutate(total = n()) %>%
+  group_by(key, total, isna) %>%
+  summarise(num.isna = n()) %>%
+  mutate(pct = num.isna / total * 100)
+
+
+levels <-
+    (missing.values  %>% arrange(desc(pct)))$key
+
+percentage.plot <- missing.values %>%
+      ggplot() +
+        geom_bar(aes(x = reorder(key, desc(pct)), 
+                     y = pct, fill=isna), 
+                 stat = 'identity', alpha=0.8) +
+      scale_x_discrete(limits = levels) +
+      scale_fill_manual(name = "", 
+                        values = c('steelblue', 'tomato3'), labels = c("Present", "Missing")) +
+      coord_flip() +
+      labs(title = "Percentage of missing values", x =
+             'Variable', y = "% of missing values")
+
+percentage.plot
+```
