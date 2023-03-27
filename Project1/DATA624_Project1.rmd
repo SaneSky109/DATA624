@@ -1,0 +1,1000 @@
+---
+title: 'DATA624: Project 1'
+author: "Eric Lehmphul"
+date: "3/12/2023"
+output: 
+  rmdformats::readthedown:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=F, message=F}
+library(tidyverse)
+library(readxl)
+library(fpp3)
+library(forecast)
+```
+
+# Objective
+
+This project consists of 3 parts - two required and one bonus and is worth 15% of your grade.  The project is due at 11:59 PM on Sunday March 26th.  I will accept late submissions with a penalty until the meetup after that when we review some projects.
+
+
+Part A – ATM Forecast, ATM624Data.xlsx
+ 
+In part A, I want you to forecast how much cash is taken out of 4 different ATM machines for May 2010.  The data is given in a single file.  The variable ‘Cash’ is provided in hundreds of dollars, other than that it is straight forward.   I am being somewhat ambiguous on purpose to make this have a little more business feeling.  Explain and demonstrate your process, techniques used and not used, and your actual forecast.  I am giving you data via an excel file, please provide your written report on your findings, visuals, discussion and your R code via an RPubs link along with the actual.rmd file  Also please submit the forecast which you will put in an Excel readable file.
+ 
+Part B – Forecasting Power, ResidentialCustomerForecastLoad-624.xlsx
+ 
+Part B consists of a simple dataset of residential power usage for January 1998 until December 2013.  Your assignment is to model these data and a monthly forecast for 2014.  The data is given in a single file.  The variable ‘KWH’ is power consumption in Kilowatt hours, the rest is straight forward.    Add this to your existing files above. 
+ 
+ 
+Part C – BONUS, optional (part or all), Waterflow_Pipe1.xlsx and Waterflow_Pipe2.xlsx
+ 
+Part C consists of two data sets.  These are simple 2 columns sets, however they have different time stamps.  Your optional assignment is to time-base sequence the data and aggregate based on hour (example of what this looks like, follows).  Note for multiple recordings within an hour, take the mean.  Then to determine if the data is stationary and can it be forecast.  If so, provide a week forward forecast and present results via Rpubs and .rmd and the forecast in an Excel readable file.   
+
+
+
+# Part A - ATM Forecast
+
+
+## Read in Data
+
+The data is stored in an excel file and needs to be loaded into R to perform analysis.
+
+### Raw Data
+
+There are missing values that need to be imputed prior to analysis to maintain continuity in the time series.
+
+```{r, warning=FALSE}
+a <- read_excel("ATM624Data.xlsx", col_types = c('date', 'text', 'numeric'))
+
+head(a)
+```
+
+```{r}
+summary(a)
+```
+
+### Cleaned and Imputed Data
+
+Upon further inspection, most of the missing data values occur from May 1st, 2010 to May 14th, 2010. The objective of the project is to forecast the month of May 2010, therefore I will only use the data provided before May, 1st, 2010 to create my forecast. There are still 5 missing values that need to be imputed prior to advancing the analysis. ATM1 is missing 3 values and ATM2 is missing 2 values. I chose to impute the missing values with the Last Observation Carried Forward technique which simply fills the missing value with the previous non-NA value.
+
+
+```{r}
+a$ATM <- as.factor(a$ATM)
+a$DATE <- as.Date(a$DATE)
+head(a)
+```
+
+
+```{r}
+summary(a)
+```
+
+```{r}
+which(is.na(a$ATM))
+a[731:744,]
+```
+
+
+```{r}
+a <- a[-c(731:744),]
+```
+
+
+```{r}
+a.data <- spread(data = a, key = ATM, value = Cash)
+paste0("Number of Cash NA values for ATM1: " , sum(is.na(a.data$ATM1)))
+paste0("Number of Cash NA values for ATM2: " , sum(is.na(a.data$ATM2)))
+paste0("Number of Cash NA values for ATM3: " , sum(is.na(a.data$ATM3)))
+paste0("Number of Cash NA values for ATM4: " , sum(is.na(a.data$ATM4)))
+```
+
+
+```{r}
+a.data <- a.data %>%
+        fill(ATM1, .direction = "down") %>%
+        fill(ATM2, .direction = "down")
+```
+
+
+```{r}
+paste0("Number of NA values in dataset: " , sum(is.na(a.data)))
+```
+
+
+```{r}
+summary(a.data)
+```
+
+
+```{r}
+a.data.ts <- a.data %>%
+        gather(ATM, Cash, ATM1:ATM4)
+```
+
+
+```{r}
+a.data.ts <- as_tsibble(a.data.ts, index = DATE, key = ATM)
+```
+
+
+## Data Exploration
+
+There looks to be seasonality in ATM1 and ATM2. ATM3 appears to have been inactive for most of the time series with a spike of activity with the last few days. ATM4 has an outlier that is making it difficult to understand the series. To minimize the bias of the outlier, I will replace the outlier with the median.
+
+Notes on ATMS:
+
+* ATM1 does not have a clear trend but has seasonality.  
+* ATM2 does not have a clear trend but has seasonality.
+* ATM3 has a Cash gain of 0 for most of the series. This likely means that the ATM was not in service until the end of the time series.
+* ATM4, after the outlier was replaced, appears to have some seasonality and no clear trend.
+
+```{r}
+a.data.ts %>%
+        autoplot(Cash) +
+        facet_wrap(~ATM, scales = "free", nrow = 4) +
+        ggtitle("Prior to Outlier Adjustment")
+```
+
+
+```{r}
+paste0("Row number of outlier: ", which.max(a.data.ts$Cash))
+```
+
+```{r}
+a.data.ts[1380,3] <- 403.839
+```
+
+
+```{r}
+a.data.ts %>%
+        autoplot(Cash) +
+        facet_wrap(~ATM, scales = "free", nrow = 4) +
+        ggtitle("After Outlier Adjustment")
+```
+
+
+## Data Modeling
+
+### ATM1
+
+#### Check if Data is Stationary
+
+In order to use ARIMA models, the data must be stationary. The data appears to have strong seasonal autocorrelation every week. After taking 1 seasonal difference with the lag equal to 7 days, the data appears to be stationary.
+
+```{r}
+atm1 <- a.data.ts %>%
+        filter(ATM == 'ATM1')
+
+gg_tsdisplay(atm1, plot_type='partial') +
+        ggtitle("ATM1 Before Differencing")
+```
+
+```{r}
+atm1 %>%
+  features(Cash, unitroot_kpss, lag = 7)
+```
+
+```{r}
+nsd <- atm1 %>%
+  features(Cash, unitroot_nsdiffs, lag = 7)
+
+paste0("Number of Seasonal differences needed for stationarity: ", nsd$nsdiffs)
+```
+
+
+```{r}
+atm1 %>%
+  features(difference(Cash, lag = 7), unitroot_kpss)
+```
+
+
+```{r}
+gg_tsdisplay(atm1, difference(Cash, lag = 7), plot_type='partial') +
+        ggtitle("ATM1 After Differencing")
+```
+
+```{r}
+atm1 <- atm1 %>%
+        mutate(diff_Cash = difference(Cash, lag = 7))
+```
+
+
+### Model Creation
+
+To find the optimal model for ATM1, 5 separate models comprised of different forecasting methods were created. The models will be compared via accuracy metrics to find the optimal model. The following models were created:
+
+* MEAN model, using the mean as the forecast
+* SNAIVE model, using the seasonal naive value as the prediction
+* ETS(A,N,A), using the additive exponential smoothing prediction as forecast
+* ETS(M, N, M) using the multiplicative exponential smoothing predication as forecast
+* ARIMA(0,0,1)(0,1,2)[7]
+
+```{r}
+lambda <- atm1 %>%
+  features(Cash, features = guerrero) %>%
+  pull(lambda_guerrero)
+
+fit1 <- atm1 %>%
+  model(
+        MEAN = MEAN(Cash),
+        SNAIVE = SNAIVE(Cash),
+        ETS_Additive = ETS(Cash ~ error("A") + trend("N") + season("A")),
+        ETS_Multiplicative = ETS(Cash ~ error("M") + trend("N") + season("M")),
+        #ETS_Additive_Boxcox = ETS(box_cox(Cash, lambda) ~ error("A") + trend("N") + season("A")),
+        #ETS_Multiplicative_Boxcox  = ETS(box_cox(Cash, lambda) ~ error("M") + trend("N") + season("M"))
+        ARIMA = ARIMA(Cash)
+        )
+
+
+fc1 <- fit1 %>%
+  forecast(h = 31)
+```
+
+
+```{r}
+#fit1.arima <- atm1 %>%
+#        model(
+#                ARIMA_Differenced = ARIMA(diff_Cash)
+#        )
+#
+#fc1.arima <- fit1.arima %>%
+#  forecast(h = 31)
+```
+
+
+### Model Evaluation
+
+The best model according to the accuracy metrics is the ARIMA(0,0,1)(0,1,2)[7]. The ARIMA model had the best RMSE and MAE indicating that it had the best fit for the time series.
+
+```{r}
+#acc.met <- fit1 %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc.met2 <- fit1.arima %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc <- rbind(acc.met, acc.met2)
+
+acc.met2 <- fit1 %>%
+        accuracy() %>%
+        select(.model, RMSE, MAE)
+
+#RMSE2 <- fit1.arima %>%
+#        accuracy() %>%
+#        select(RMSE)
+
+#rmse <- rbind(RMSE, RMSE2)
+
+#kableExtra::kable(cbind(acc.met, acc.met2))
+
+kableExtra::kable(acc.met2)
+```
+
+
+### Model Diagnostics
+
+The ARIMA(0,0,1)(0,1,2)[7] residuals meet the key expectations for model forecasting. The innovation residuals are likely from white noise as the lag values are within the blue bands in the ACF plot. The mean of the innovation residuals is very close to zero (mean = -0.07), meaning the model is unbiased. The properties of constant variance and normality are not met but are not necessary for forecasting.
+
+```{r}
+fit1.forecast <- atm1 %>%
+  model(
+        ARIMA = ARIMA(Cash)
+        )
+
+fit1.forecast %>%
+        gg_tsresiduals()
+```
+
+```{r}
+resid <- residuals(fit1.forecast, type = "innovation")
+mean(resid$.resid) 
+```
+
+
+### Forecast
+
+The forecast for ATM1 is provided below. The forecasts have been stored in a .csv file that will be up on my Github and attached to the Project submission.
+
+```{r}
+fit1.forecast <- atm1 %>%
+  model(
+        ARIMA = ARIMA(Cash)
+        )
+
+
+fc1.final <- fit1.forecast %>%
+  forecast(h = 31)
+
+
+fc1.final %>%
+  autoplot(atm1) +
+  ggtitle("ATM1: ARIMA(0,0,1)(0,1,2)[7] Forecast")
+```
+
+
+```{r}
+DATA624_Project1_PartA_ATM1_Forecast <- as.data.frame(fc1.final) %>%
+        select(DATE, .mean)
+
+write.csv(DATA624_Project1_PartA_ATM1_Forecast, "DATA624_Project1_PartA_ATM1_Forecast.csv")
+```
+
+
+### ATM2
+
+#### Check if Data is Stationary
+
+Similar to ATM1, ATM2 data appears to have strong seasonal autocorrelation every week. After taking 1 seasonal difference with the lag equal to 7 days, the data appears to be stationary.
+
+```{r}
+atm2 <- a.data.ts %>%
+        filter(ATM == 'ATM2')
+
+gg_tsdisplay(atm1, plot_type='partial') +
+        ggtitle("ATM2 Before Differencing")
+```
+
+```{r}
+atm2 %>%
+  features(Cash, unitroot_kpss, lag = 7)
+```
+
+```{r}
+nsd <- atm2 %>%
+  features(Cash, unitroot_nsdiffs, lag = 7)
+
+paste0("Number of Seasonal differences needed for stationarity: ", nsd$nsdiffs)
+```
+
+
+```{r}
+atm2 %>%
+  features(difference(Cash, lag = 7), unitroot_kpss)
+```
+
+
+```{r}
+gg_tsdisplay(atm2, difference(Cash, lag = 7), plot_type='partial') +
+        ggtitle("ATM2 After Differencing")
+```
+
+```{r}
+atm2 <- atm2 %>%
+        mutate(diff_Cash = difference(Cash, lag = 7))
+```
+
+
+### Model Creation
+
+A handful of models were created in the process of identifying the ideal model for ATM2. The models will be compared via accuracy metrics to find the optimal model. The following models were created:
+
+* MEAN model, using the mean as the forecast
+* SNAIVE model, using the seasonal naive value as the prediction
+* ETS(A,N,A), using the additive exponential smoothing prediction as forecast
+* ETS(M, N, M) using the multiplicative exponential smoothing predication as forecast
+* ARIMA(2,0,2)(0,1,1)[7]
+
+```{r}
+lambda <- atm2 %>%
+  features(Cash, features = guerrero) %>%
+  pull(lambda_guerrero)
+
+fit2 <- atm2 %>%
+  model(
+        MEAN = MEAN(Cash),
+        SNAIVE = SNAIVE(Cash),
+        ETS_Additive = ETS(Cash ~ error("A") + trend("N") + season("A")),
+        ETS_Multiplicative = ETS(Cash ~ error("M") + trend("N") + season("M")),
+        #ETS_Additive_Boxcox = ETS(box_cox(Cash, lambda) ~ error("A") + trend("N") + season("A")),
+        #ETS_Multiplicative_Boxcox  = ETS(box_cox(Cash, lambda) ~ error("M") + trend("N") + season("M"))
+        ARIMA = ARIMA(Cash)
+        )
+
+
+fc2 <- fit2 %>%
+  forecast(h = 31)
+```
+
+
+```{r}
+#fit1.arima <- atm1 %>%
+#        model(
+#                ARIMA_Differenced = ARIMA(diff_Cash)
+#        )
+#
+#fc1.arima <- fit1.arima %>%
+#  forecast(h = 31)
+```
+
+
+
+### Model Evaluation
+
+The best model according to the accuracy metrics is the ARIMA(2,0,2)(0,1,1)[7]. The ARIMA model had the best RMSE and MAE indicating that it had the best fit for the time series. The ETS_Additive model is a close second choice model in terms of model fit.
+
+```{r}
+#acc.met <- fit1 %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc.met2 <- fit1.arima %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc <- rbind(acc.met, acc.met2)
+
+acc.met4 <- fit2 %>%
+        accuracy() %>%
+        select(.model, RMSE, MAE)
+
+#RMSE2 <- fit1.arima %>%
+#        accuracy() %>%
+#        select(RMSE)
+
+#rmse <- rbind(RMSE, RMSE2)
+
+#kableExtra::kable(cbind(acc.met, acc.met2))
+
+kableExtra::kable(acc.met4)
+```
+
+
+
+### Model Diagnostics
+
+The ARIMA(2,0,2)(0,1,1)[7] met the key expectations for model forecasting. The ACF plot shows that innovation residuals are likely from white noise as the lag values are below / close to the bands. The mean of the innovation residuals is extremely close to zero (mean = -0.87). The homoscedascity property is not met, however, as the variance changes throughout the series. Finally the data is not exactly from a normal distribution. The homoscedascity and normality properties are helpful but not necessary for forecasting.
+
+```{r}
+fit2.forecast <- atm2 %>%
+  model(
+        ARIMA = ARIMA(Cash)
+        )
+
+fit2.forecast %>%
+        gg_tsresiduals()
+```
+
+```{r}
+resid <- residuals(fit2.forecast, type = "innovation")
+mean(resid$.resid) 
+```
+
+
+### Forecast
+
+The forecast for ATM2 is provided below. The forecasts have been stored in a .csv file that will be up on my Github and attached to the Project submission.
+
+```{r}
+fit2.forecast <- atm2 %>%
+  model(
+        ARIMA = ARIMA(Cash)
+        )
+
+
+fc2.final <- fit2.forecast %>%
+  forecast(h = 31)
+
+
+fc2.final %>%
+  autoplot(atm2) +
+  ggtitle("ATM2: ARIMA(2,0,2)(0,1,1)[7] Forecast")
+```
+
+
+```{r}
+DATA624_Project1_PartA_ATM2_Forecast <- as.data.frame(fc2.final) %>%
+        select(DATE, .mean)
+
+write.csv(DATA624_Project1_PartA_ATM2_Forecast, "DATA624_Project1_PartA_ATM2_Forecast.csv")
+```
+
+
+### ATM 3
+
+
+#### Check if Data is Stationary
+
+ATM3 does not need to be differenced prior to ARIMA model creation. There is no seasonality present like the previous two ATMs and the unitroot kpss test showed that the series is stationary as is.
+
+```{r}
+atm3 <- a.data.ts %>%
+        filter(ATM == 'ATM3')
+
+gg_tsdisplay(atm3, plot_type='partial') +
+        ggtitle("ATM3 Before Differencing")
+```
+
+```{r}
+atm3 %>%
+  features(Cash, unitroot_kpss, lag = 7)
+```
+
+```{r}
+nsd <- atm3 %>%
+  features(Cash, unitroot_nsdiffs, lag = 7)
+
+paste0("Number of Seasonal differences needed for stationarity: ", nsd$nsdiffs)
+```
+
+
+### Model Creation
+
+Many models were fit to try to identify the ideal model for ATM3. The models will be compared via accuracy metrics to find the optimal model. The following models were created:
+
+* MEAN model, using the mean as the forecast
+* NAIVE model, using the naive value as the prediction
+* ETS(A,N,A), using the additive exponential smoothing prediction as forecast
+* ETS(M, N, M) using the multiplicative exponential smoothing predication as forecast
+* ARIMA(0,0,2)
+
+```{r}
+#lambda <- atm3 %>%
+#  features(Cash, features = guerrero) %>%
+#  pull(lambda_guerrero)
+
+fit3 <- atm3 %>%
+  model(
+        MEAN = MEAN(Cash),
+        NAIVE = NAIVE(Cash),
+        ETS_Additive = ETS(Cash ~ error("A") + trend("N") + season("A")),
+        ETS_Multiplicative = ETS(Cash ~ error("M") + trend("N") + season("M")),
+        #ETS_Additive_Boxcox = ETS(box_cox(Cash, lambda) ~ error("A") + trend("N") + season("A")),
+        #ETS_Multiplicative_Boxcox  = ETS(box_cox(Cash, lambda) ~ error("M") + trend("N") + season("M"))
+        ARIMA = ARIMA(Cash)
+        )
+
+
+fc3 <- fit3 %>%
+  forecast(h = 31)
+```
+
+
+```{r}
+#fit1.arima <- atm1 %>%
+#        model(
+#                ARIMA_Differenced = ARIMA(diff_Cash)
+#        )
+#
+#fc1.arima <- fit1.arima %>%
+#  forecast(h = 31)
+```
+
+
+
+### Model Evaluation
+
+The best model due to the combination of simplicity and accuracy is the NAIVE model. Though the ARIMA model has slight superior accuracy metrics, the NAIVE model is much simpler and is almost as effective (0.06 difference in RMSE and 0.04 in MAE).
+
+```{r}
+#acc.met <- fit1 %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc.met2 <- fit1.arima %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc <- rbind(acc.met, acc.met2)
+
+acc.met6 <- fit3 %>%
+        accuracy() %>%
+        select(.model, RMSE, MAE)
+
+#RMSE2 <- fit1.arima %>%
+#        accuracy() %>%
+#        select(RMSE)
+
+#rmse <- rbind(RMSE, RMSE2)
+
+#kableExtra::kable(cbind(acc.met, acc.met2))
+
+kableExtra::kable(acc.met6)
+```
+
+
+
+
+
+### Forecast
+
+The forecast for ATM3 is provided below. The forecasts have been stored in a .csv file that will be up on my Github and attached to the Project submission.
+
+```{r}
+fit3.forecast <- atm3 %>%
+  model(
+        NAIVE = NAIVE(Cash)
+        )
+
+
+fc3.final <- fit3.forecast %>%
+  forecast(h = 31)
+
+
+fc3.final %>%
+  autoplot(atm3) +
+  ggtitle("ATM3: NAIVE Forecast")
+```
+
+
+```{r}
+DATA624_Project1_PartA_ATM3_Forecast <- as.data.frame(fc3.final) %>%
+        select(DATE, .mean)
+
+write.csv(DATA624_Project1_PartA_ATM3_Forecast, "DATA624_Project1_PartA_ATM3_Forecast.csv")
+```
+
+
+### ATM4
+
+#### Check if Data is Stationary
+
+ATM4 appears to be stationary without having to difference. The ACF and PACF show that differencing is not necessary.
+
+```{r}
+atm4 <- a.data.ts %>%
+        filter(ATM == 'ATM4')
+
+gg_tsdisplay(atm4, plot_type='partial') +
+        ggtitle("ATM4 Before Differencing")
+```
+
+```{r}
+atm4 %>%
+  features(Cash, unitroot_kpss, lag = 7)
+```
+
+```{r}
+nsd <- atm4 %>%
+  features(Cash, unitroot_ndiffs)
+
+paste0("Number of differences needed for stationarity: ", nsd$ndiffs)
+```
+
+
+
+
+### Model Creation
+
+Many models were fit to try to identify the ideal model for ATM4. The following models were created:
+
+* MEAN model, using the mean as the forecast
+* SNAIVE model, using the seasonal naive value as the prediction
+* ETS(A,N,A), using the additive exponential smoothing prediction as forecast
+* ETS(M, N, M) using the multiplicative exponential smoothing predication as forecast
+* ARIMA(3,0,2)(1,0,0)[7]
+
+```{r}
+#lambda <- atm3 %>%
+#  features(Cash, features = guerrero) %>%
+#  pull(lambda_guerrero)
+
+fit4 <- atm4 %>%
+  model(
+        MEAN = MEAN(Cash),
+        SNAIVE = SNAIVE(Cash),
+        ETS_Additive = ETS(Cash ~ error("A") + trend("N") + season("A")),
+        ETS_Multiplicative = ETS(Cash ~ error("M") + trend("N") + season("M")),
+        #ETS_Additive_Boxcox = ETS(box_cox(Cash, lambda) ~ error("A") + trend("N") + season("A")),
+        #ETS_Multiplicative_Boxcox  = ETS(box_cox(Cash, lambda) ~ error("M") + trend("N") + season("M"))
+        ARIMA = ARIMA(Cash)
+        )
+
+
+fc4 <- fit4 %>%
+  forecast(h = 31)
+```
+
+
+
+```{r}
+#fit1.arima <- atm1 %>%
+#        model(
+#                ARIMA_Differenced = ARIMA(diff_Cash)
+#        )
+#
+#fc1.arima <- fit1.arima %>%
+#  forecast(h = 31)
+```
+
+
+
+### Model Evaluation
+
+The best fitting model for ATM4 is the ETS_Additive model. This model has the lowest RMSE and MAE suggesting that it is the best fit for future predictions.
+
+```{r}
+#acc.met <- fit1 %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc.met2 <- fit1.arima %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc <- rbind(acc.met, acc.met2)
+
+acc.met8 <- fit4 %>%
+        accuracy() %>%
+        select(.model, RMSE, MAE)
+
+#RMSE2 <- fit1.arima %>%
+#        accuracy() %>%
+#        select(RMSE)
+
+#rmse <- rbind(RMSE, RMSE2)
+
+#kableExtra::kable(cbind(acc.met, acc.met2))
+
+kableExtra::kable(acc.met8)
+```
+
+
+### Model Diagnostics
+
+The Additive Exponential Smoothing model meets some of the criteria to yield a good forecast. The ACF plot conveys that the innovation residuals are from white noise. The mean of the innovation residuals are also relatively close to 0. The model does not meet the properties of constant variance and normal distribution. This model should be fairly effective in forecasting ATM4 cash flow. The homoscedascity and normality properties are helpful but not necessary for forecasting.
+
+```{r}
+fit4.forecast <- atm4 %>%
+  model(
+        ETS_Additive = ETS(Cash ~ error("A") + trend("N") + season("A"))
+        )
+
+fit4.forecast %>%
+        gg_tsresiduals()
+```
+
+
+```{r}
+resid <- residuals(fit4.forecast, type = "innovation")
+mean(resid$.resid) 
+```
+
+
+### Forecast
+
+The forecast for ATM4 is provided below. The forecasts have been stored in a .csv file that will be up on my Github and attached to the Project submission.
+
+
+```{r}
+fit4.forecast <- atm4 %>%
+  model(
+        ETS_Additive = ETS(Cash ~ error("A") + trend("N") + season("A"))
+        )
+
+
+fc4.final <- fit4.forecast %>%
+  forecast(h = 31)
+
+
+fc4.final %>%
+  autoplot(atm4) +
+  ggtitle("ATM4: Additive Exponential Smoothing Forecast")
+```
+
+```{r}
+DATA624_Project1_PartA_ATM4_Forecast <- as.data.frame(fc4.final) %>%
+        select(DATE, .mean)
+
+write.csv(DATA624_Project1_PartA_ATM4_Forecast, "DATA624_Project1_PartA_ATM4_Forecast.csv")
+```
+
+
+# Part B - Forecasting Power
+
+
+## Read in Data
+
+The date column needs to be adjusted to a yearmonth date rather than a character. There is also a missing value in the `KWH` column. I will replace the missing value with the prior year value of the same month. For example, the missing value for September, 2008 will be filled with the September, 2007 KWH value. 
+
+```{r}
+b <- read_excel("ResidentialCustomerForecastLoad-624.xlsx")
+
+head(b)
+
+b <- b %>%
+        rename(YearMonth = "YYYY-MMM") %>%
+        mutate(YearMonth = yearmonth(YearMonth))
+
+b.data <- as_tsibble(b, index = YearMonth) 
+
+head(b.data)
+
+summary(b.data$KWH)
+```
+
+```{r}
+paste0("Num of missing values: ", sum(is.na(b.data)))
+paste0("Row index of NA value: " ,which(is.na(b.data$KWH)))
+b.data[129,]
+```
+
+
+```{r}
+b.data[129,3] <- b.data[117,3]
+```
+
+```{r}
+paste0("Num of missing values: ", sum(is.na(b.data)))
+```
+
+
+## Data Exploration
+
+
+The data is seasonal and contains and outlier for July 2010 with a much lower power usage than any other month. There also appears to be a slight upward trend in energy usage which could be due to a rise / fall in local temperature month over month especially during summer and winter months. The outlier will be replaced with the previous year's value for that month (Ex July 2010 will be replaced with July 2009).
+
+```{r}
+b.data %>%
+        autoplot(KWH) +
+        ggtitle("Residential Customer Power Consumption w/ Outlier")
+```
+
+```{r}
+paste0("Row index of outlier: " ,which.min(b.data$KWH))
+b.data[151,]
+```
+
+
+```{r}
+b.data[151,3] <- b.data[139,3]
+```
+
+
+```{r}
+b.data %>%
+        autoplot(KWH) +
+        ggtitle("Residential Customer Power Consumption w/ Adjusted Outlier")
+```
+
+
+
+## Data Modeling
+
+### Check if Data is Stationary
+
+
+Like in Part A, checking the stationarity of the time series is key to using ARIMA models. The data appears to have strong seasonal autocorrelation every 12 months. After taking 1 seasonal difference the data appears to be stationary.
+
+```{r}
+gg_tsdisplay(b.data, y = KWH, plot_type='partial') +
+        ggtitle("Before Differencing")
+```
+
+```{r}
+b.data %>%
+  features(KWH, unitroot_kpss, lag = 12)
+```
+
+```{r}
+nsd <- b.data %>%
+  features(KWH, unitroot_nsdiffs, lag = 12)
+
+paste0("Number of Seasonal differences needed for stationarity: ", nsd$nsdiffs)
+```
+
+
+```{r}
+b.data %>%
+  features(difference(KWH, lag = 12), unitroot_kpss)
+```
+
+
+```{r}
+gg_tsdisplay(b.data, difference(KWH, lag = 12), plot_type='partial') +
+        ggtitle("ATM1 After Differencing")
+```
+
+```{r}
+b.data <- b.data %>%
+        mutate(diff_KWH = difference(KWH, lag = 12))
+```
+
+
+### Model Creation
+
+A few different models with varying degrees of complexity were created to attempt to find a model that could be effective in forecasting future consumer power usage. Basic models like MEAN and SNAIVE were used as well as more complicated ETS and ARIMA models. Each model will be compared to find the best fitting model to use for forecasting.
+
+```{r}
+fit5 <- b.data %>%
+  model(
+        MEAN = MEAN(KWH),
+        SNAIVE = SNAIVE(KWH),
+        ETS_Additive = ETS(KWH ~ error("A") + trend("A") + season("A")),
+        ETS_Multiplicative = ETS(KWH ~ error("M") + trend("A") + season("M")),
+        #ETS_Additive_Boxcox = ETS(box_cox(KWH, lambda) ~ error("A") + trend("N") + season("A")),
+        #ETS_Multiplicative_Boxcox  = ETS(box_cox(KWH, lambda) ~ error("M") + trend("N") + season("M"))
+        ARIMA = ARIMA(KWH)
+        )
+```
+
+
+
+### Model Evaluation
+
+The ARIMA(0,0,4)(2,1,0)[12] w/ drift model outperformed all of the other models in terms of RMSE and MAE. This model will be used for forecasting.
+
+```{r}
+#acc.met <- fit1 %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc.met2 <- fit1.arima %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc <- rbind(acc.met, acc.met2)
+
+acc.met10 <- fit5 %>%
+        accuracy() %>%
+        select(.model, RMSE, MAE)
+
+#RMSE2 <- fit1.arima %>%
+#        accuracy() %>%
+#        select(RMSE)
+
+#rmse <- rbind(RMSE, RMSE2)
+
+#kableExtra::kable(cbind(acc.met, acc.met2))
+
+kableExtra::kable(acc.met10)
+```
+
+
+
+### Model Diagnostics
+
+The ARIMA(0,0,4)(2,1,0)[12] w/ drift meet most of the expectations for model forecasting. The AFC plot shows that innovation residuals are likely from white noise. The mean of the innovation residuals are close to zero given the scale of the innovation residuals is in the millions (mean = -8653). The homoscedascity property is not met, however, as the variance changes throughout the series. Finally the data is not exactly from a normal distribution. The homoscedascity and normality properties are helpful but not necessary for forecasting.
+
+```{r}
+fit5.forecast <- b.data %>%
+  model(
+        ARIMA = ARIMA(KWH)
+        )
+
+fit5.forecast %>%
+        gg_tsresiduals()
+```
+
+```{r}
+resid <- residuals(fit5.forecast, type = "innovation")
+mean(resid$.resid) 
+```
+
+
+
+### Forecast
+
+The forecast for the Electricity Consumption is provided below. The forecasts have been stored in a .csv file that will be up on my Github and attached to the Project submission.
+
+```{r}
+fc5.final <- fit5.forecast %>%
+  forecast(h = "1 year")
+
+
+fc5.final %>%
+  autoplot(b.data) +
+  ggtitle("Residential Power Consumption: ARIMA(0,0,4)(2,1,0)[12] w/ drift Forecast")
+```
+
+```{r}
+DATA624_Project1_PartB_Forecast <- as.data.frame(fc5.final) %>%
+        select(YearMonth, .mean)
+
+write.csv(DATA624_Project1_PartB_Forecast, "DATA624_Project1_PartB_Forecast.csv")
+```
+
+
+
+
+
+
+
