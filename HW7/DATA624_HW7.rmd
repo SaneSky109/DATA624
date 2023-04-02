@@ -1,0 +1,326 @@
+---
+title: 'DATA624: Homework 7'
+author: "Eric Lehmphul"
+date: "3/26/2023"
+output: 
+  rmdformats::readthedown:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=F, message=F}
+library(AppliedPredictiveModeling)
+library(caret)
+library(dplyr)
+library(corrplot)
+```
+
+# Objective
+
+In Kuhn and Johnson do problems 6.2 and 6.3. There are only two but they consist of many parts.  Please submit a link to your Rpubs and submit the .rmd file as well.
+
+
+# Exercise 6.2
+
+Developing a model to predict permeability (see Sect. 1.4) could save significant
+resources for a pharmaceutical company, while at the same time more
+rapidly identifying molecules that have a sufficient permeability to become a
+drug:
+
+## Part: a
+
+Start R and use these commands to load the data:
+
+```{r}
+library(AppliedPredictiveModeling)
+data(permeability)
+```
+
+The matrix fingerprints contains the 1,107 binary molecular predictors for the 65 compounds, while permeability contains permeability response.
+
+
+## Part: b
+
+The fingerprint predictors indicate the presence or absence of substructures
+of a molecule and are often sparse meaning that relatively few of the
+molecules contain each substructure. Filter out the predictors that have
+low frequencies using the nearZeroVar function from the caret package.
+How many predictors are left for modeling?
+
+388 predictors are left for modeling.
+
+```{r}
+near_zero <- nearZeroVar(fingerprints)
+
+fingerprints2 <- fingerprints[, -near_zero]
+
+paste0("There are ", length(near_zero), " variables that are sparse, leaving ", ncol(fingerprints2), " predictors for modeling")
+```
+
+
+
+## Part: c
+
+
+Split the data into a training and a test set, pre-process the data, and
+tune a PLS model. How many latent variables are optimal and what is
+the corresponding resampled estimate of $R^2$?
+
+The PLS model is optimal with 2 latent variables. The corresponding $R^2$ estimate is 0.496.
+
+```{r}
+set.seed(15)
+train_test_split <- createDataPartition(permeability, p = 0.7, list = FALSE)
+
+
+
+train.x <- fingerprints2[train_test_split,]
+train.y <- permeability[train_test_split,]
+
+test.x <- fingerprints2[-train_test_split,]
+test.y <- permeability[-train_test_split,]
+
+
+plsTune <- train(train.x, train.y,
+                 method = "pls",
+                 metric = "Rsquared",
+                 tuneLength = 20,
+                 trControl = trainControl(method = "cv", number = 10),
+                 preProc = c("center", "scale"))
+
+plsTune
+```
+
+```{r}
+ggplot(plsTune) +
+  xlab("Number of Predictors")
+```
+
+
+
+## Part: d
+
+Predict the response for the test set. What is the test set estimate of $R^2$?
+
+The estimated $R^2$ for the test set is 0.45 which is slightly worse than the training set.
+
+```{r}
+pls.predictions <- predict(plsTune, newdata = test.x)
+
+postResample(pred = pls.predictions, obs = test.y)
+```
+
+
+
+
+
+## Part: e
+
+Try building other models discussed in this chapter. Do any have better
+predictive performance?
+
+None of the models that were discussed in this chapter outperformed the PLS model. The closest model to the PLS model, in terms of predictive performance, was the pcr model with an $R^2$ of 0.436.
+
+```{r, cache=TRUE}
+pcrTune <- train(train.x, train.y,
+                   method = "pcr",
+                   metric = "Rsquared",
+                   tuneLength = 10,
+                   trControl = trainControl("cv", number = 10),
+                   preProc=c('center', 'scale')
+)
+
+
+ridgeGrid <- data.frame(.lambda = seq(0.001, .1, length = 10))
+
+ridgeTune <- train(train.x, train.y,
+                   method = "ridge",
+                   metric = "Rsquared",
+                   tuneGrid = ridgeGrid,
+                   tuneLength = 10,
+                   trControl = trainControl(method = "cv", number = 10),
+                   preProc = c("center", "scale"))
+
+
+
+enetGrid <- expand.grid(.lambda = c(0.001, 0.01, .1), 
+                        .fraction = seq(.05, 1, length = 10))
+
+enetTune <- train(train.x, train.y,
+                  method = "enet",
+                  metric = "Rsquared",
+                  tuneGrid = enetGrid,
+                  tuneLength = 10,
+                  trControl = trainControl(method = "cv", number = 10),
+                  preProc = c("center", "scale"))
+
+
+```
+
+
+
+```{r}
+pcr.predictions <- predict(pcrTune, newdata = test.x)
+pcr.model <- postResample(pred = pcr.predictions, obs = test.y)
+
+ridge.predictions <- predict(ridgeTune, newdata = test.x)
+ridge.model <- postResample(pred = ridge.predictions, obs = test.y)
+
+enet.predictions <- predict(enetTune, newdata = test.x)
+enet.model <- postResample(pred = enet.predictions, obs = test.y)
+
+pls.predictions <- predict(plsTune, newdata = test.x)
+pls.model <-postResample(pred = pls.predictions, obs = test.y)
+
+rbind(pcr.model, ridge.model, enet.model, pls.model)
+```
+
+
+
+## Part: f
+
+Would you recommend any of your models to replace the permeability
+laboratory experiment?
+
+I would not recommend the permeability laboratory experiment to be replaced with any of the models created above. The Rsquared values show that at best, only about 45% of the variability is being explained by the model. Other models only explain about 30% of the variability. This is not enough to confidently replace the experiment.
+
+
+
+# Exercise 6.3
+
+
+A chemical manufacturing process for a pharmaceutical product was
+discussed in Sect. 1.4. In this problem, the objective is to understand the relationship
+between biological measurements of the raw materials (predictors), measurements of the manufacturing process (predictors), and the response of
+product yield. Biological predictors cannot be changed but can be used to
+assess the quality of the raw material before processing. On the other hand,
+manufacturing process predictors can be changed in the manufacturing process.
+Improving product yield by 1% will boost revenue by approximately
+one hundred thousand dollars per batch:
+
+
+
+## Part: a
+
+Start R and use these commands to load the data:
+
+```{r}
+library(AppliedPredictiveModeling)
+
+data("ChemicalManufacturingProcess")
+```
+
+
+The matrix processPredictors contains the 57 predictors (12 describing
+the input biological material and 45 describing the process predictors)
+for the 176 manufacturing runs. yield contains the percent yield for each
+run.
+
+
+
+## Part: b
+
+A small percentage of cells in the predictor set contain missing values. Use
+an imputation function to fill in these missing values (e.g., see Sect. 3.8).
+
+I chose to impute the missing values using knn imputation.
+
+```{r}
+imputed.knn <- preProcess(ChemicalManufacturingProcess,
+           method = "knnImpute",
+           k = sqrt(nrow(ChemicalManufacturingProcess))
+           )
+
+imputed.data <- predict(imputed.knn, ChemicalManufacturingProcess)
+```
+
+
+## Part: c
+
+Split the data into a training and a test set, pre-process the data, and
+tune a model of your choice from this chapter. What is the optimal value
+of the performance metric?
+
+To preprocess the data, I removed near zero variables. I then created a 70% - 30% train test split. A ridge regression model was created to model the data. The optimal value of the performance metric are provided below. This model achieved the highest R squared and a relatively low RMSE.
+```{r}
+near_zero <- nearZeroVar(imputed.data)
+
+imputed.data <- imputed.data[, -near_zero]
+
+set.seed(15)
+train_test_split <- createDataPartition(permeability, p = 0.7, list = FALSE)
+
+train.data <- imputed.data[train_test_split,]
+test.data <- imputed.data[-train_test_split,]
+
+
+ridgeGrid <- data.frame(.lambda = seq(0.001, 1.1, length = 20))
+
+ridgeTune <- train(Yield~., train.data,
+                   method = "ridge",
+                   metric = "Rsquared",
+                   tuneGrid = ridgeGrid,
+                   tuneLength = 20,
+                   trControl = trainControl(method = "cv", number = 10),
+                   preProc = c("center", "scale"))
+
+ridgeTune
+```
+
+
+```{r}
+ridgeTune$results[15,]
+```
+
+
+## Part: d
+
+Predict the response for the test set.What is the value of the performance
+metric and how does this compare with the resampled performance metric
+on the training set?
+
+The test set results are slightly worse than the training set which is to be expected. The model performance seems to be similar on both training and testing, indicating that the model has not been overfit or underfit.
+
+```{r}
+ridge.predictions <- predict(ridgeTune, newdata = test.data)
+ridge.model <- postResample(pred = ridge.predictions, obs = test.data$Yield)
+
+ridge.model
+```
+
+
+## Part: e
+
+Which predictors are most important in the model you have trained? Do
+either the biological or process predictors dominate the list?
+
+Below is a list of the top 20 variables from the model. The top 5 variables are a combination of biological and process variables. The top 20 contains 11 process variables and 9 biological variables. It appears that there is a fairly equal split of importance between the two variable types. 
+
+```{r}
+varImp(ridgeTune)
+```
+
+
+
+## Part: f
+
+Explore the relationships between each of the top predictors and the response.
+How could this information be helpful in improving yield in future
+runs of the manufacturing process?
+
+Most of the important variables have a moderate correlation with the target variable, Yield. There are a handful of biological material and manufacturing processes that are correlated with eachother. The relationships between the response variable and the other predictor variables can be leveraged into maximizing variables that are positively correlated with Yield and other predictors and reduce variables that have a negative relationship with Yield and other predictors. 
+
+```{r}
+important.vars <- imputed.data %>%
+  select("Yield", "ManufacturingProcess32", "BiologicalMaterial06", "ManufacturingProcess13",
+         "BiologicalMaterial12", "BiologicalMaterial03", "ManufacturingProcess17", "ManufacturingProcess36",
+         "ManufacturingProcess09", "ManufacturingProcess06", "ManufacturingProcess31")
+
+cor.matrix <- cor(important.vars)
+
+corrplot(corr = cor.matrix, tl.col = 'black',  type = 'lower', diag = FALSE)
+```
