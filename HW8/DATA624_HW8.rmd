@@ -1,0 +1,443 @@
+---
+title: 'DATA624: Homework 8'
+author: "Eric Lehmphul"
+date: "4/2/2023"
+output: 
+  rmdformats::readthedown:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=F, message=F}
+library(AppliedPredictiveModeling)
+library(caret)
+library(mlbench)
+library(dplyr)
+library(corrplot)
+```
+
+# Objective
+
+Do problems 7.2 and 7.5 in Kuhn and Johnson. There are only two but they have many parts. Please submit both a link to your Rpubs and the .rmd file.
+
+
+
+
+# 7.2
+
+
+Friedman (1991) introduced several benchmark data sets create by simulation.
+One of these simulations used the following nonlinear equation to
+create data:
+
+$y = 10 sin(\pi x_1 x_2) + 20(x_3 - 0.5)^2 + 10x_4 + 5x_5 + N(0, \sigma^2)$
+
+where the x values are random variables uniformly distributed between [0, 1]
+(there are also 5 other non-informative variables also created in the simulation).
+The package mlbench contains a function called mlbench.friedman1 that
+simulates these data:
+
+```{r}
+set.seed(200)
+trainingData <- mlbench.friedman1(200, sd = 1)
+## We convert the 'x' data from a matrix to a data frame
+## One reason is that this will give the columns names.
+trainingData$x <- data.frame(trainingData$x)
+## Look at the data using
+featurePlot(trainingData$x, trainingData$y)
+## or other methods.
+
+## This creates a list with a vector 'y' and a matrix
+## of predictors 'x'. Also simulate a large test set to
+## estimate the true error rate with good precision:
+testData <- mlbench.friedman1(5000, sd = 1)
+testData$x <- data.frame(testData$x)
+```
+
+
+Tune several models on these data. For example:
+
+
+```{r}
+set.seed(200)
+knnModel <- train(x = trainingData$x,
+                  y = trainingData$y,
+                  method = "knn",
+                  preProc = c("center", "scale"),
+                  tuneLength = 10)
+knnModel
+```
+
+
+```{r}
+knnPred <- predict(knnModel, newdata = testData$x)
+## The function 'postResample' can be used to get the test set
+## perforamnce values
+postResample(pred = knnPred, obs = testData$y)
+```
+
+
+Which models appear to give the best performance? Does MARS select the
+informative predictors (those named X1–X5)?
+
+## Models
+
+I developed different nonlinear algorithms to try to fit the data created above. I created KNN, SVM, MARS, and Neural Network models to compare testing performance and identify the best model for the dataset.
+
+### KNN
+
+```{r}
+set.seed(200)
+knnModel <- train(x = trainingData$x,
+                  y = trainingData$y,
+                  method = "knn",
+                  preProc = c("center", "scale"),
+                  tuneLength = 10,
+                  trControl = trainControl(method = "cv"))
+knnModel
+```
+
+
+```{r}
+knnPred <- predict(knnModel, newdata = testData$x)
+
+knnMetrics <- postResample(pred = knnPred, obs = testData$y)
+
+knnMetrics
+```
+
+
+
+### SVM
+
+
+```{r}
+set.seed(200)
+svmModel <- train(x = trainingData$x,
+                  y = trainingData$y,
+                  method = "svmRadial",
+                  preProc = c("center", "scale"),
+                  tuneLength = 10,
+                  trControl = trainControl(method = "cv"))
+
+svmModel
+```
+
+
+```{r}
+svmPred <- predict(svmModel, newdata = testData$x)
+
+svmMetrics <- postResample(pred = svmPred, obs = testData$y)
+
+svmMetrics
+```
+
+
+
+### MARS
+
+
+```{r,cache=TRUE}
+set.seed(200)
+marsGrid <- expand.grid(.degree = 1:2, .nprune = 2:38)
+
+marsModel <- train(x = trainingData$x,
+                  y = trainingData$y,
+                  method = "earth",
+                  preProc = c("center", "scale"),
+                  tuneGrid = marsGrid,
+                  tuneLength = 10,
+                  trControl = trainControl(method = "cv"))
+
+marsModel
+```
+
+
+```{r}
+marsPred <- predict(marsModel, newdata = testData$x)
+
+marsMetrics <- postResample(pred = marsPred, obs = testData$y)
+
+marsMetrics
+```
+
+
+
+### Neural Network
+
+
+```{r,cache=TRUE}
+set.seed(200)
+nnetGrid <- expand.grid(.decay = c(0, 0.01, .1),
+                        .size = c(1:10),
+                        .bag = FALSE)
+
+nnetModel <- train(trainingData$x,
+                   trainingData$y,
+                   method = "avNNet",
+                   tuneGrid = nnetGrid,
+                   trControl = trainControl(method = "cv"),
+                   preProc = c("center", "scale"),
+                   linout = TRUE,
+                   trace = FALSE,
+                   MaxNWts = 10 * (ncol(trainingData$x) + 1) + 10 + 1,
+                   maxit = 500)
+
+nnetModel
+```
+
+```{r}
+nnetPred <- predict(nnetModel, newdata = testData$x)
+
+nnetMetrics <- postResample(pred = nnetPred, obs = testData$y)
+
+nnetMetrics
+```
+
+
+## Best Model
+
+The best model across all metrics (RMSE, Rsquared, and MAE) is the Multivariate Adaptive Regression Spline model. The neural network and support vector machine models performed slightly worse but were comparable. The worst model for this dataset is the KNN model. 
+
+```{r}
+kableExtra::kable(rbind(knnMetrics,
+      svmMetrics,
+      marsMetrics,
+      nnetMetrics))
+```
+
+## MARS Variable Selection
+
+As shown by the variable importance function, X1 - X5 were selected by the MARS algorithm.
+
+```{r}
+varImp(marsModel)
+```
+
+
+
+# 7.5
+
+
+Exercise 6.3 describes data for a chemical manufacturing process. Use
+the same data imputation, data splitting, and pre-processing steps as before
+and train several nonlinear regression models.
+
+
+(a) Which nonlinear regression model gives the optimal resampling and test
+set performance?
+
+
+(b) Which predictors are most important in the optimal nonlinear regression
+model? Do either the biological or process variables dominate the
+list? How do the top ten important predictors compare to the top ten
+predictors from the optimal linear model?
+
+
+(c) Explore the relationships between the top predictors and the response for
+the predictors that are unique to the optimal nonlinear regression model.
+Do these plots reveal intuition about the biological or process predictors
+and their relationship with yield?
+
+
+## Data Preparation
+
+
+```{r}
+data("ChemicalManufacturingProcess")
+
+imputed.knn <- preProcess(ChemicalManufacturingProcess,
+           method = "knnImpute",
+           k = sqrt(nrow(ChemicalManufacturingProcess))
+           )
+
+imputed.data <- predict(imputed.knn, ChemicalManufacturingProcess)
+
+near_zero <- nearZeroVar(imputed.data)
+
+imputed.data <- imputed.data[, -near_zero]
+
+set.seed(115)
+train_test_split <- createDataPartition(ChemicalManufacturingProcess$Yield, p = 0.7, list = FALSE)
+
+train.data <- imputed.data[train_test_split,]
+test.data <- imputed.data[-train_test_split,]
+```
+
+
+## Part A
+
+
+
+### KNN
+
+```{r}
+set.seed(200)
+knnModel <- train(Yield ~ .,
+                   data = train.data,
+                  method = "knn",
+                  preProc = c("center", "scale"),
+                  tuneLength = 10,
+                  trControl = trainControl(method = "cv"))
+```
+
+
+```{r}
+knnPred <- predict(knnModel, newdata = test.data)
+
+knnMetrics <- postResample(pred = knnPred, obs = test.data$Yield)
+
+knnMetrics
+```
+
+
+
+### SVM
+
+
+```{r}
+set.seed(200)
+svmModel <- train(Yield ~ .,
+                   data = train.data,
+                  method = "svmRadial",
+                  preProc = c("center", "scale"),
+                  tuneLength = 10,
+                  trControl = trainControl(method = "cv"))
+
+```
+
+
+```{r}
+svmPred <- predict(svmModel, newdata = test.data)
+
+svmMetrics <- postResample(pred = svmPred, obs = test.data$Yield)
+
+svmMetrics
+```
+
+
+
+### MARS
+
+
+```{r,cache=TRUE}
+set.seed(200)
+marsGrid <- expand.grid(.degree = 1:2, .nprune = 2:38)
+
+marsModel <- train(Yield ~ .,
+                   data = train.data,
+                  method = "earth",
+                  preProc = c("center", "scale"),
+                  tuneGrid = marsGrid,
+                  tuneLength = 10,
+                  trControl = trainControl(method = "cv"))
+
+```
+
+
+```{r}
+marsPred <- predict(marsModel, newdata = test.data)
+
+marsMetrics <- postResample(pred = marsPred, obs = test.data$Yield)
+
+marsMetrics
+```
+
+
+
+### Neural Network
+
+
+```{r,cache=TRUE, warning=FALSE}
+set.seed(200)
+
+nnetModel <- train(Yield ~ .,
+                   data = train.data,
+                   method = "avNNet",
+                   trControl = trainControl(method = "cv"),
+                   preProc = c("center", "scale"),
+                   linout = TRUE,
+                   trace = FALSE,
+                   MaxNWts = 10 * (ncol(trainingData$x) + 1) + 10 + 1,
+                   maxit = 500)
+
+```
+
+```{r}
+nnetPred <- predict(nnetModel, newdata = test.data)
+
+nnetMetrics <- postResample(pred = nnetPred, obs = test.data$Yield)
+
+nnetMetrics
+```
+
+
+
+
+### Model Comparison
+
+The SVM and Neural Network models produce similar results, though the Neural Network model appears to be a slightly superior fit for the data as it is better in terms of both R squared and RMSE and only slightly inferior in MAE. 
+
+```{r}
+kableExtra::kable(rbind(knnMetrics,
+      svmMetrics,
+      marsMetrics,
+      nnetMetrics))
+```
+
+
+
+## Part B
+
+Both the Nonlinear and Linear optimal models appear to weight the importance of each variable similarly.
+
+### Nonlinear: Neural Network Variable Importance
+
+There are a combination of ManufacturingProcess and BiologicalMaterial variables that are within the top 10. 4 of the top 6 are BiologicalMaterial though the most important variable is related to the ManufacturingProcess. 
+
+```{r}
+varImp(nnetModel)
+```
+
+
+### Linear: Ridge Regression Variable Importance
+
+
+The top 5 variables are a combination of biological and process variables. The top 20 contains 11 process variables and 9 biological variables. It appears that there is a fairly equal split of importance between the two variable types. 
+
+```{r}
+ridgeGrid <- data.frame(.lambda = seq(0.001, 1.1, length = 20))
+
+ridgeTune <- train(Yield~., train.data,
+                   method = "ridge",
+                   metric = "RMSE",
+                   tuneGrid = ridgeGrid,
+                   tuneLength = 20,
+                   trControl = trainControl(method = "cv", number = 10),
+                   preProc = c("center", "scale"))
+
+varImp(ridgeTune)
+```
+
+
+
+
+## Part C
+
+It appears that the ManufacturingProcess variables have a higher correlation coefficent with Yield compared to the top BiologicalMaterial variables. To increase Yield, a combination of postively correlated variables like ManufacturingProcess32 and BiologicalMaterial02 should be used whereas decreasing ManufacturingProcess36 and ManufacturingProcess13 would prove to be beneficial.
+
+
+```{r}
+important.vars <- imputed.data %>%
+  select("Yield", "ManufacturingProcess32", "BiologicalMaterial06", "ManufacturingProcess13",
+         "BiologicalMaterial12", "BiologicalMaterial03", "BiologicalMaterial02", "ManufacturingProcess17", "ManufacturingProcess36",
+         "ManufacturingProcess09", "ManufacturingProcess31")
+
+cor.matrix <- cor(important.vars)
+
+corrplot(corr = cor.matrix, tl.col = 'black',  type = 'lower', diag = FALSE)
+```
