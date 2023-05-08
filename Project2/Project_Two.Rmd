@@ -1,0 +1,477 @@
+---
+title: "Project 2"
+author: "Joshua Hummell, Eric Lehmphul, and Bharani Nittala"
+date: "2023-04-28"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+
+
+---
+
+
+```{css, echo=FALSE}
+pre {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+pre[class] {
+  max-height: 90px;
+}
+```
+
+```{css, echo=FALSE}
+.scroll-90 {
+  max-height: 90px;
+  overflow-y: auto;
+  background-color: inherit;
+}
+```
+
+
+
+
+
+```{r setup, include=FALSE}
+library('urca')
+library('tidyverse')
+library("dplyr")
+library("readxl")
+library('tsibble')
+library('tsibbledata')
+library('lubridate')
+library('fabletools')
+library('fpp3')
+library('httr')
+library('readxl')
+library('timetk')
+library("readr")
+
+library('caret')
+library('rpart')
+library('rpart.plot')
+library('DT')
+library('xgboost')
+```
+
+Intro:
+We are a team of Data Scientists working for a PCG company. Due to regulation, we need to better predict the PH in our beverages.
+
+
+Summary [we will add in after we run the models]
+
+1) Ensure Data Quality
+While performing the ETL we noticed that there were missing data points across several processes as well as several missing brand entries. 
+
+
+
+
+```{r pressure, .scroll-90, warning=FALSE}
+myfile <- "https://raw.githubusercontent.com/jhumms/624/main/data-dump/StudentData.csv"
+Train <- read_csv(myfile)
+
+
+myfile <- "https://raw.githubusercontent.com/jhumms/624/main/data-dump/StudentEvaluation.csv"
+Test <- read_csv(myfile)
+rm(myfile)
+
+```
+
+# ETL
+## The first step is to get a good look at our data and make sure it is clean enough to model.
+
+```{r}
+dim(Train)
+
+dim(Test)
+```
+
+We see that the Train Table has 2571 entries and 33 columns. While Test has all 33 columns but only 267 entries. Let's glimpse the data to see what we can find. 
+```{r}
+head(Train)
+```
+We can see that there are different Branded beverages with different fills, pressures, carb temps, etc. When we clean the data, it will be important to clean it by each group so that we are not filling in incorrect values. Now let's run the summary. 
+
+
+
+```{r}
+summary(Train)
+
+summary(Test)
+```
+
+When we look at the summary stats, we can see there are quite a few NAs in both Train and Test, I think it is safe to remove the NAs the values, we will replace with the mean. To see if this is viable, we can take a look the box plots for the data. 
+
+
+```{r}
+par(mfrow=c(2,5))
+for (i in 2:length(Train)) {
+        boxplot(Train[,i], main=names(Train[i]), type="l")
+
+}
+
+
+BPT <-Test %>% dplyr::select(-PH)
+par(mfrow=c(2,5))
+for (i in 2:length(BPT)) {
+        boxplot(BPT[,i], main=names(BPT[i]), type="l")
+
+}
+rm(BPT)
+```
+The only one that wouldn't appear to work is MFR, which has crazy variation and also a large amount of NAs. We will begin by removing that and making sure Brand Code is a factor. 
+
+```{r}
+Train <- Train %>% dplyr::select(-MFR)
+Train$`Brand Code` <- as.factor(Train$`Brand Code`)
+unique(Train$`Brand Code`)
+
+Test <- Test %>% dplyr::select(-MFR)
+```
+
+
+I also noticed that there are a few Brand Codes that are NA (120 ~ 5% of the data), we will remove those entries. 
+
+```{r}
+Train <- Train %>%
+ filter(!is.na(`Brand Code`))
+```
+
+
+
+```{r}
+Train <- Train %>%
+  group_by(`Brand Code`) %>% 
+  mutate(across(1:31, ~replace_na(., mean(., na.rm=TRUE))))
+
+
+Test <- Test %>% 
+  dplyr::select(-PH) %>% 
+  group_by(`Brand Code`) %>% 
+  mutate(across(1:30, ~replace_na(., mean(., na.rm=TRUE))))
+
+
+```
+
+
+```{r}
+summary(Train)
+
+summary(Test)
+```
+
+Now that we have the NAs out of the way we can take a look at the corrplot and see if there is any collinearity. We will look at all, and then any that are above .85
+
+```{r}
+m <- stats::cor(Train[,2:32], method = "pearson")
+
+corrplot::corrplot(m)
+
+
+corrplot::corrplot(m[apply(m, 1, function(x) any(x > 0.84 & x < 1) ),
+                   apply(m, 2, function(x) any(x > 0.84 & x < 1) )])
+
+```
+
+We can see that there is some collinearity, especially between Balling, Density, Alch Rel, Carb Rel, and Balling Lvl. If we choose Ridge regression or any of the more advanced models, we will not have to worry too much about it. But if we are choosing a more simple model, we will have to make sure we account for the multicollinearity by merging/removing columns. 
+
+Let's check the histogram for PH across each group, then in general see how the data plots against each other:
+
+
+```{r}
+for (i in unique(Train$`Brand Code`)) {
+  print(Train %>% filter(`Brand Code` == i) %>%
+    ggplot(aes(x=PH)) +
+    geom_histogram(bins=25))
+}
+
+
+for (i in unique(Train$`Brand Code`)) {
+  print(Train %>% filter(`Brand Code` == i) %>%
+    ggplot(aes(x=log(PH))) +
+    geom_histogram(bins=25))
+}
+
+
+```
+
+
+The distribution around PH is better as logged and will help us with the forecasting. Now let's see what the relationship looks like between PH and the other variables. 
+
+And now I think it is time for modelling.
+
+# Modeling
+
+## Create Training, Validation, and Cross Valiation Datasets
+
+We chose to use 80% of the data to train the various machine learning methods below and use the remaining 20% to validate the results of the models. A seed was assigned to allow for reproducibility.
+
+```{r}
+set.seed(123)
+
+trainIndex <- createDataPartition(Train$PH, p = 0.8,
+                                  list = FALSE,
+                                  times = 1)
+
+train.data <- Train[ trainIndex,]
+validation.data <- Train[-trainIndex,]
+
+colnames(train.data) <- make.names(colnames(train.data))
+colnames(validation.data) <- make.names(colnames(validation.data))
+colnames(Test) <- make.names(colnames(Test))
+
+cross.validation <- trainControl(method = "cv", number = 10)
+```
+
+## Linear Models
+
+
+### Ordinary Least Squares Regression
+
+The OLS model created accounts for the strict assumptions needed for reliable results. The model was created using backward stepwise selection, eliminating variables until an optimal AIC was found. The variables `Balling`, `Balling Lvl`, and `Alch Rel` were excluded from modeling as there was evidence of multicolinearity. The final model summary and accuracy metrics are displayed below.
+
+```{r}
+lm.model <- train(PH~.-Balling-Balling.Lvl-Alch.Rel, 
+                  data = train.data,
+                  method = "lmStepAIC",
+                  direction="backward",
+                  trControl = cross.validation,
+                  trace = F)
+
+
+lm.pred <- predict(lm.model, newdata = validation.data)
+
+lm.metrics <- postResample(pred = lm.pred, obs = validation.data$PH)
+
+lm.metrics
+```
+
+```{r}
+summary(lm.model$finalModel)
+```
+
+#### Model Diagnostics
+
+The assumptions for linear regression are: linear relationship between target and explanatory variables, independence among observations, homoscedasticity, and normality of residuals. The variables included in the model are variables that have moderate correlation with the target variable, `PH`. Each observation is independent as this is not a time series dataset. The residuals appear to have a constant variance bounded beteen 5 and -5. The residuals are near normal with small tails. There is also no multicolinearity present in the model as the VIF values do not excede 10.
+
+```{r}
+par(mfrow = c(2, 2))
+plot(lm.model$finalModel)
+```
+
+```{r}
+car::vif(lm.model$finalModel)
+```
+
+### Partial Least Squares
+
+Partial Least Squares creates uncorrelated components of variables to maximize the variance of explanatory variables. PLS reduces the effects multicolinearity has on the model, therefore all variables were used to assess an optimal model. The PLS model metrics are displayed below.
+
+```{r}
+pls.model <- train(PH~., 
+                  data = train.data,
+                  method = "pls",
+                  preProc = c("center", "scale"),
+                  tuneLength = 50,
+                  trControl = cross.validation,
+                  metric = "RMSE")
+
+
+
+pls.pred <- predict(pls.model, newdata = validation.data)
+
+pls.metrics <- postResample(pred = pls.pred, obs = validation.data$PH)
+
+pls.metrics
+```
+
+
+## Non Linear Models 
+
+
+### Support Vector Machine
+
+The next model we created was a Support Vector Regressor with a radial kernel to try to identify the optimal hyperplane for the dataset. The results are displayed below.
+
+```{r, cache=TRUE}
+svm.model <- train(PH~., 
+                  data = train.data,
+                  method = "svmRadial",
+                  preProc = c("center", "scale"),
+                  tuneLength = 20,
+                  trControl = cross.validation,
+                  metric = "RMSE")
+
+
+
+svm.pred <- predict(svm.model, newdata = validation.data)
+
+svm.metrics <- postResample(pred = svm.pred, obs = validation.data$PH)
+
+svm.metrics
+```
+
+### Neural Network
+
+Another nonlinear model we created to try to find the best fit for `PH` was a single layer forward feeding neural network. Neural networks are effective with large amounts of data, but are near impossible to interpret and are computationay intensive. To account for run time the model only has a single layer with a small number of iterations and weights. The model results are seen below.
+
+```{r,cache=TRUE}
+nnet.model <- train(PH~.,
+                   data = train.data,
+                   method = "nnet",
+                   trControl = cross.validation,
+                   preProc = c("center", "scale"),
+                   linout = TRUE,
+                   trace = FALSE,
+                   maxit = 750,
+                   MaxNWts = 1250)
+
+
+nnet.pred <- predict(nnet.model, newdata = validation.data)
+
+nnet.metrics <- postResample(pred = nnet.pred, obs = validation.data$PH)
+
+nnet.metrics
+```
+
+## Tree based Models
+
+
+### Decision Tree
+
+The next model we developed was a decision tree. Decision trees are capable of capturing nonlinear relationships as well as feature importance. They are highly interpretable, but are not as accurate as other tree based methods. The model we created has a maximum depth of 12 leaves and a minimum split of 30 observations. The results and decision tree structure are presented below.
+
+```{r}
+colnames(train.data) <- make.names(colnames(train.data))
+colnames(validation.data) <- make.names(colnames(validation.data))
+colnames(Test) <- make.names(colnames(Test))
+
+rpart.model <- train(PH~.,
+                   data = train.data,
+                   method = "rpart",
+                   tuneLength = 200,
+                   control = rpart.control(maxdepth = 12, minsplit = 30),
+                   trControl = cross.validation)
+
+
+rpart.pred <- predict(rpart.model, newdata = validation.data)
+
+rpart.metrics <- postResample(pred = rpart.pred, obs = validation.data$PH)
+
+rpart.metrics
+```
+
+
+```{r}
+rpart.plot(rpart.model$finalModel)
+```
+
+### XGBoost
+
+The last model we created was an XGBoost tree model. XGBoost is a ensemble algorithm, in which many decision trees are combined into a single model to improve overall accuracy. The downside of ensemble methods are that they are more difficult to interpret compared to individual models. The optimal XGBoost model was found via a grid search where the best results occurred with 1000 decision trees, a learning rate of 0.05, a maximum tree depth of 5, and a gamma of 0. The results of the model can be seen below.
+
+```{r}
+set.seed(123)
+# hyperparameters <- expand.grid(
+#  nrounds = c(200, 500, 1000),
+#  eta = c(0.025, 0.05, 0.1, 0.3),
+#  max_depth = c(2, 3, 4, 5),
+#  gamma = 0,
+#  colsample_bytree = 0.8,
+#  min_child_weight = 1,
+#  subsample = 0.5
+#)
+
+
+hyperparameters <- expand.grid(
+  nrounds = 1000,
+  eta = 0.05,
+  max_depth = 5,
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+xgb.model <- train(PH~.,
+                   data = train.data,
+                   method = "xgbTree",
+                   tuneGrid = hyperparameters,
+                   trControl = cross.validation,
+                   verbosity = 0)
+
+
+xgb.pred <- predict(xgb.model, newdata = validation.data)
+
+xgb.metrics <- postResample(pred = xgb.pred, obs = validation.data$PH)
+
+xgb.metrics
+```
+
+
+
+## Model Comparison
+
+The RMSE, $R^2$, and MAE were recorded for each model presented above to be compared to find the optimal model to predict `PH`. The linear models produced the worst results, nonlinear produced middle of the road results, and the tree based models achieved the best performance merics. The best of the best model is the XGBoost with the lowest RMSE (0.09), best $R^2$ (0.69), and lowest MAE (0.07). 
+
+```{r}
+kableExtra::kable(rbind(
+  lm.metrics,
+  pls.metrics,
+  svm.metrics,
+  nnet.metrics,
+  rpart.metrics,
+  xgb.metrics))
+```
+
+## Variable Importance
+
+The variables that are most impactful for predicting `PH` are `Mnf.Flow`, `Usage.cont`, and `Oxygen.Filter`. The data table exhibits all the variables importance to the XGBoost model. The plot showcases the top 10 contributors to `PH` predictive power.
+
+```{r}
+importance_matrix = xgb.importance(data = train.data, model = xgb.model$finalModel)
+
+datatable(importance_matrix)
+```
+
+
+```{r}
+xgb.plot.importance(importance_matrix[1:10,])
+```
+
+
+
+## Model Predictions on Student Evaluation Data
+
+The Student Evaluation Dataset underwent the same preprocessing as the training data. The only adjustment needed to generate predictions was to handle the missing values in the `Brand.Code` column in which the rows were removed from the dataset. The XGBoost model was applied to the Student Evaluation dataset where predictions for `PH` were generated. The data table below shows the prediction results. 
+
+
+```{r}
+Test <- Test[complete.cases(Test),]
+Test$PH <- NA
+
+predictions <- predict(xgb.model, newdata = Test)
+Test$PH <- predictions
+Student_Evaluation_Predictions <- data.frame(Test[,c(32,1:31)])
+```
+
+
+```{r}
+datatable(Student_Evaluation_Predictions)
+```
+
+
+
+
+
+```{r}
+write.csv(Student_Evaluation_Predictions, "Student_Evaluation_Predictions.csv")
+```
+
+
+
+
+
