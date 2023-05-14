@@ -1,0 +1,617 @@
+---
+title: "DATA 624 Project 2"
+author: "Bharani Nittala, Eric Lehmphul, Joshua Hummell"
+date: "April 12, 2023"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+
+```{css, echo=FALSE}
+pre {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+pre[class] {
+  max-height: 90px;
+}
+```
+
+```{css, echo=FALSE}
+.scroll-90 {
+  max-height: 90px;
+  overflow-y: auto;
+  background-color: inherit;
+}
+```
+
+
+
+```{r setup, include=FALSE}
+library('urca')
+library('tidyverse')
+library("dplyr")
+library("readxl")
+library('tsibble')
+library('tsibbledata')
+library('lubridate')
+library('fabletools')
+library('fpp3')
+library('httr')
+library('readxl')
+library('timetk')
+library("readr")
+library("caret")
+library("MASS")
+library("kableExtra")
+library("randomForest")
+library("gbm")
+library('rpart')
+library('rpart.plot')
+library('DT')
+library('xgboost')
+
+```
+
+# Instructions
+This is role playing.  I am your new boss.  I am in charge of production at ABC Beverage and you are a team of data scientists reporting to me.  My leadership has told me that new regulations are requiring us to understand our manufacturing process, the predictive factors and be able to report to them our predictive model of pH.  
+
+Please use the historical data set I am providing. Build and report the factors in BOTH a technical and non-technical report.  I like to use Word and Excel.  Please provide your non-technical report in a business friendly readable document and your predictions in an Excel readable format. The technical report should show clearly the models you tested and how you selected your final approach.  
+
+Please submit both Rpubs links and .rmd files or other readable formats for technical and non-technical reports.  Also submit the excel file showing the prediction of your models for pH.
+
+# Exploratory Data Analysis
+
+
+
+#### Problem statement
+
+We are a team of Data Scientists working for a PCG company. Due to regulation, we need to better predict the PH in our beverages.
+
+
+#### Summary
+
+With the given data, we cannot confidently predict the PH for our line of variables, the issues begin with data gathering. We were able to achieve the highest RSqsaured of 67.8% and an RMSE of 1.01. Since PH is already a logged number, our error is essentially $1^{10}$. Below is an overview of the RMSE and RSqaured for each individual Brand Code. We can see the highest is B and only has an RSqaured of .74. We aim to achieve an RSquared of at minimum .85. 
+
+```{r echo=FALSE}
+
+t <- tribble(
+  ~ Brand.Code, ~ RMSE, ~ RSqaured,
+  "A","0.10487783", "0.53631742",
+  "B","0.08658230", "0.74858830",
+  "C","0.1543169", "0.2629705",
+  "D","0.07831330", "0.67088021" 
+)
+
+t
+```
+
+The forecasting methods we tried included Linear Modelling and Non-Linear Methods. Linear included multi-linear regression, partial least squares, AIC optimized. Non Linear included k-nearest neighbors (KNN), support vector machines (SVM) and multivariate adaptive regression splines (MARS), rpart, and XGBoost. With XGBoost offerinng the highest RSqaured and lowest RMSE. 
+
+This brings us to the issues with the data and how we can resolve them in the face of government regulation. The first and foremost issue is that we lost about 5% of our data because the beverages were not properly labelled. Then, we noticed within the sensors themselves there were several missing values and values with wide ranges. This begs the question, how often are our sensors calibrated or tested? 
+
+The first steps we should take given the pressure for governmental regulation should be to build out better data QA procedures. We should teach the importance of labeling data so that any bottles we are tested have the full name and data. 
+
+Second, we should build out a new process to ensure our sensors are working properly and that we have the information for when they were last calibrated/inspected in a table where we can properly ensure the quality of the data we are receiving. 
+
+
+## Load & Review Train Data
+
+1) Ensure Data Quality
+While performing the ETL we noticed that there were missing data points across several processes as well as several missing brand entries. 
+
+
+```{r pressure, warning=FALSE}
+myfile <- "https://raw.githubusercontent.com/jhumms/624/main/data-dump/StudentData.csv"
+Train <- read_csv(myfile)
+
+
+myfile <- "https://raw.githubusercontent.com/jhumms/624/main/data-dump/StudentEvaluation.csv"
+Test <- read_csv(myfile)
+rm(myfile)
+
+exp(0.01159245)
+
+```
+
+The first step is to get a good look at our data and make sure it is clean enough to model.
+
+```{r}
+dim(Train)
+
+dim(Test)
+```
+
+We see that the Train Table has 2571 entries and 33 columns. While Test has all 33 columns but only 267 entries. Let's glimpse the data to see what we can find. 
+```{r}
+head(Train)
+```
+We can see that there are different Branded beverages with different fills, pressures, carb temps, etc. When we clean the data, it will be important to clean it by each group so that we are not filling in incorrect values. Now let's run the summary. 
+
+```{r}
+summary(Train)
+
+summary(Test)
+```
+
+## Distributions
+
+When we look at the summary stats, we can see there are quite a few NAs in both Train and Test, I think it is safe to remove the NAs the values, we will replace with preprocess, but first we want to see if any variables have distributions that would make it hard to predict with. 
+
+
+```{r}
+par(mfrow=c(2,5))
+for (i in 2:length(Train)) {
+        boxplot(Train[,i], main=names(Train[i]), type="l")
+
+}
+
+
+BPT <-Test %>% dplyr::select(-PH)
+par(mfrow=c(2,5))
+for (i in 2:length(BPT)) {
+        boxplot(BPT[,i], main=names(BPT[i]), type="l")
+
+}
+rm(BPT)
+```
+The only one that wouldn't appear to work is MFR, which has crazy variation and also a large amount of NAs. We will begin by removing that and making sure Brand Code is a factor. 
+
+```{r}
+Train <- Train %>% dplyr::select(-MFR)
+Train$`Brand Code` <- as.factor(Train$`Brand Code`)
+unique(Train$`Brand Code`)
+
+Test <- Test %>% dplyr::select(-MFR)
+Test$`Brand Code` <- as.factor(Test$`Brand Code`)
+```
+
+
+We also noticed that there are a few Brand Codes that are NA (120 ~ 5% of the data), we will remove those entries. 
+
+```{r}
+Train <- Train %>%
+ filter(!is.na(`Brand Code`))
+
+Train <- Train %>%
+ filter(!is.na(PH))
+
+Test <- Test %>%
+ filter(!is.na(`Brand Code`))
+```
+
+
+Now let's process Train and test datasets
+```{r}
+set.seed(100)
+
+# First we will join them together so nzv works and does not cause mismatched data sets
+Train <- rbind(Train, Test)
+
+# Train
+
+#remove pH from the train data set in order to only transform the predictors
+train_features <- Train %>% 
+  dplyr::select(-c(PH))
+#remove nzv, correlated values, center and scale, apply BoxCox for normalization
+preProc <- preProcess(as.data.frame(train_features), method=c("knnImpute","nzv","corr",
+                                               "center", "scale", "BoxCox"))
+#get the transformed features
+preProc_train <- predict(preProc, as.data.frame(train_features))
+#add the PH response variable to the preProcessed train features
+preProc_train$PH <- Train$PH 
+
+# Split datasets
+
+
+test_features <- preProc_train %>% filter(is.na(PH))
+
+preProc_train <- preProc_train %>% filter(!is.na(PH))
+
+preProc_train$PH <- log(preProc_train$PH)
+```
+
+
+
+
+```{r}
+summary(preProc_train)
+
+summary(test_features)
+```
+
+Now that we have the NAs out of the way we can take a look at the corrplot and see if there is any collinearity. We will look at all, and then any that are above .85
+
+## Variable Correlations
+
+```{r}
+m <- stats::cor(preProc_train[,2:26], method = "pearson")
+
+corrplot::corrplot(m)
+```
+
+We can see that there is some collinearity, especially between Balling, Density, Alch Rel, Carb Rel, and Balling Lvl. If we choose Ridge regression or any of the more advanced models, we will not have to worry too much about it. But if we are choosing a more simple model, we will have to make sure we account for the multicollinearity by merging/removing columns. 
+
+Let's check the histogram for PH across each group, then in general see how the data plots against each other:
+
+
+```{r}
+for (i in unique(Train$`Brand Code`)) {
+  print(Train %>% filter(`Brand Code` == i) %>%
+    ggplot(aes(x=PH)) +
+    geom_histogram(bins=25))
+}
+
+
+for (i in unique(Train$`Brand Code`)) {
+  print(Train %>% filter(`Brand Code` == i) %>%
+    ggplot(aes(x=log(PH))) +
+    geom_histogram(bins=25))
+}
+```
+
+```{r}
+#partition data for evaluation
+training_set <- createDataPartition(preProc_train$PH, p=0.8, list=FALSE)
+train_data <- preProc_train[training_set,]
+eval_data <- preProc_train[-training_set,]
+```
+
+
+
+The distribution around PH is better as logged and will help us with the forecasting. Now let's see what the relationship looks like between PH and the other variables. 
+
+And now it is time for modelling:
+
+# Build Models
+
+## Linear Models
+
+We consider these linear regression models: **multi-linear regression**, **partial least squares**, **AIC optimized** . We utilize the `train()` function for all three models, feeding the same datasets for X and Y, and specifying the proper model-building technique via the “method” variable.
+
+Moreover, the `prediction()` function in combination with `postResample()`are used to generate summary statistics for how our model performed on the evaluation data:
+
+### Multi-linear regression
+
+First, a multi-linear regression is created to predict the pH response variable.  
+
+
+```{r message=FALSE, warning=FALSE}
+#Remove PH from sets to feed models
+set.seed(100)
+y_train <- subset(train_data, select = -c(PH))
+y_test <- subset(eval_data, select = -c(PH))
+#generate model
+linear_model <- train(x= y_train, y= train_data$PH,
+                      method='lm',
+                      trControl=trainControl(method = "cv", number = 10))
+#evaluate model
+lmPred <- predict(linear_model, newdata = y_test)
+lmResample <- postResample(pred=lmPred, obs = eval_data$PH)
+```
+
+
+### Partial Least Squares
+
+Next PLS regression is performed on the data to predict PH. PLS was chosen given the multicolliniarity detected earlier in the exploratory data analysis phase.  
+
+
+```{r message=FALSE, warning=FALSE}
+set.seed(100)
+#generate model
+pls_model <- train(y_train, train_data$PH,
+                      method='pls',
+                      metric='Rsquared',
+                      tuneLength=10,
+                      trControl=trainControl(method = "cv",  number = 10))
+#evaluate model metrics
+plsPred <-predict(pls_model, newdata=y_test)
+plsReSample <- postResample(pred=plsPred, obs = eval_data$PH)
+```
+
+
+### Stepwise AIC optimized
+
+Lastly, for our linear models, a stepwise AIC model is run using `stepAIC`. The stepwise regression is performed by specifying the direction parameter with "both."
+
+  
+```{r message=FALSE, warning=FALSE}
+set.seed(100)
+#generate model
+initial <- lm(PH ~ . , data = train_data)
+AIC_model <- stepAIC(initial, direction = "both",
+                     trace = 0)
+#evaluate model metrics
+AIC_Pred <-predict(AIC_model, newdata=y_test)
+aicResample <- postResample(pred=AIC_Pred, obs=eval_data$PH)
+```
+
+
+### Linear Model Metrics
+
+We need to verify model performance and identify the strongest performing model in our multi-linear regression subset. 
+
+```{r message=FALSE, warning=FALSE}
+display <- rbind("Linear Regression" = lmResample,
+                 "Stepwise AIC" = aicResample,
+                 "Partial Least Squares" = plsReSample)
+display 
+```
+
+Simple Linear Regression seemed to have better output among the linear models. 
+
+## Non-linear Models
+
+Building non-linear models. We will try k-nearest neighbors (KNN), support vector machines (SVM) and multivariate adaptive regression splines (MARS), and XGBoost. These models are not based on simple linear combinations of the predictors.
+
+### K-Nearest Neighbors
+Predictors with the largest scales will contribute most to the distance between samples so centering and scaling the data during pre-processing is important.
+
+```{r message=FALSE, warning=FALSE}
+set.seed(100)
+knnModel <- train(PH~., data = train_data, 
+                  method = "knn",
+                  preProc = c("center", "scale"), 
+                  tuneLength = 10)
+#knnModel
+knnPred <- predict(knnModel, newdata = eval_data)
+knn_metrics <- postResample(pred = knnPred, obs = eval_data$PH)
+#knn_metrics
+```
+
+
+### Support Vector Machines
+Support Vector Machines follow the framework of robust regression where we seek to minimize the effect of outliers on the regression equations. The radial kernel we are using has an additional parameter which impacts the smoothness of the upper and lower boundary.
+
+```{r message=FALSE, warning=FALSE}
+set.seed(100)
+tc <- trainControl(method = "cv",
+                           number = 5,
+                           classProbs = T)
+svmModel <- train(PH~., data = train_data,
+                    method = "svmRadial",
+                    preProcess = c("BoxCox","center", "scale"),
+                    trControl = tc,
+                    tuneLength = 9)
+#svmModel
+svmPred <- predict(svmModel, newdata = eval_data)
+svm_metrics <- postResample(pred = svmPred, obs = eval_data$PH)
+#svm_metrics
+```
+
+### MARS
+MARS features breaks the predictor into two groups, a “hinge” function of the original based on a cut point that achieves the smallest error, and models linear relationships between the predictor and the outcome in each group. 
+
+```{r message=FALSE, warning=FALSE}
+set.seed(100)
+marsGrid <- expand.grid(.degree = 1:2, .nprune = 2:38)
+mars <- train(PH~., data = train_data,
+                   method = "earth",
+                   tuneGrid = marsGrid,
+                   trControl = trainControl(method = "cv"))
+#mars
+marsPred <- predict(mars, newdata = eval_data)
+mars_metrics <- postResample(pred = marsPred, obs = eval_data$PH)
+#mars_metrics
+```
+
+Observed Vs. Predicted  - Non - Linear Models with Reduced Predictor Set.
+
+```{r message=FALSE, warning=FALSE}
+knnModel_pred <- knnModel %>% predict(eval_data)
+# Model performance metrics
+knn_Accuracy <- data.frame(
+  Model = "k-Nearest Neighbors",
+  RMSE = caret::RMSE(knnModel_pred,eval_data$PH),
+  Rsquare = caret::R2(knnModel_pred,eval_data$PH))
+pred_svm <- svmModel %>% predict(eval_data)
+# Model SVM performance metrics
+SMV_Acc <- data.frame(
+  Model = "Support Vector Machine",
+  RMSE = caret::RMSE(pred_svm, eval_data$PH),
+  Rsquare = caret::R2(pred_svm, eval_data$PH)
+)
+
+# Make MARS predictions
+pred_mars <- mars %>% predict(eval_data)
+# Model MARS performance metrics
+MARS_Acc <- data.frame(
+  Model = "MARS Tuned",
+  RMSE = caret::RMSE(pred_mars, eval_data$PH),
+  Rsquare = caret::R2(pred_mars, eval_data$PH)
+)
+names(MARS_Acc)[names(MARS_Acc) == 'y'] <- "Rsquare"
+
+### code for the plot
+par(mar = c(4, 4, 4, 4))
+par(mfrow=c(2,2))
+plot(knnModel_pred, eval_data$PH, ylab="Observed", col = "red")
+abline(0, 1, lwd=2)
+plot(pred_svm, eval_data$PH, ylab="Observed", col = "dark green")
+abline(0, 1, lwd=2)
+plot(pred_mars, eval_data$PH, ylab="Observed", col = "blue")
+abline(0, 1, lwd=2)
+mtext("Observed Vs. Predicted  - Non - Linear Models with Reduced Predictor Set", side = 3, line = -2, outer = TRUE)
+```
+
+
+### Non-Linear Model Metrics
+```{r message=FALSE, warning=FALSE}
+rbind( "KNN" = knn_metrics,
+       "SVM" = svm_metrics,
+       "MARS" = mars_metrics) 
+
+```
+
+The top predictors in our best performing non-linear model with Support Vector Machine (SVM).
+
+
+## Tree based Models
+
+
+### Decision Tree
+
+The next model we developed was a decision tree. Decision trees are capable of capturing nonlinear relationships as well as feature importance. They are highly interpretable, but are not as accurate as other tree based methods. The model we created has a maximum depth of 12 leaves and a minimum split of 30 observations. The results and decision tree structure are presented below.
+
+```{r message=FALSE, warning=FALSE}
+colnames(train_data) <- make.names(colnames(train_data))
+colnames(eval_data) <- make.names(colnames(eval_data))
+
+y_train <- subset(train_data, select = -c(PH))
+y_test <- subset(eval_data, select = -c(PH))
+
+rpart.model <- train(PH~.,
+                   data = train_data,
+                   method = "rpart",
+                   tuneLength = 200,
+                   control = rpart.control(maxdepth = 12, minsplit = 30),
+                   trControl=trainControl(method = "cv", number = 10))
+
+
+rpart.pred <- predict(rpart.model, newdata = eval_data)
+
+rpart.metrics <- postResample(pred = rpart.pred, obs = eval_data$PH)
+
+rpart.metrics
+```
+
+
+```{r}
+rpart.plot(rpart.model$finalModel)
+```
+
+### XGBoost
+
+The last model we created was an XGBoost tree model. XGBoost is a ensemble algorithm, in which many decision trees are combined into a single model to improve overall accuracy. The downside of ensemble methods are that they are more difficult to interpret compared to individual models. The optimal XGBoost model was found via a grid search where the best results occurred with 1000 decision trees, a learning rate of 0.05, a maximum tree depth of 5, and a gamma of 0. The results of the model can be seen below.
+
+```{r}
+set.seed(100)
+
+
+
+
+hyperparameters <- expand.grid(
+  nrounds = 1000,
+  eta = 0.05,
+  max_depth = 5,
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+
+#fit XGBoost model and display training and testing data at each iteration
+
+
+xgb.model <- train(PH~.,
+                   data = train_data,
+                   method = "xgbTree",
+                   tuneGrid = hyperparameters,
+                   trControl = trainControl(method = "cv", number = 10),
+                   verbosity = 0)
+
+
+xgb.pred <- predict(xgb.model, newdata = eval_data)
+
+xgb.metrics <- postResample(pred = xgb.pred, obs = eval_data$PH)
+
+xgb.metrics
+```
+
+```{r}
+x = 1:nrow(y_test)                   # visualize the model, actual and predicted data
+plot(x, xgb.pred, col = "red", type = "l")
+lines(x, eval_data$PH, col = "blue", type = "l")
+legend(x = 1, y = 38,  legend = c("original y_test", "predicted y_test"), 
+       col = c("red", "blue"), box.lty = 1, cex = 0.8, lty = c(1, 1))
+
+```
+
+#  Evaluate & Select Models
+
+Next, the metrics for each of the best performing Linear, Non-Linear, and Tree based models are complied to evaluate the performance of each and select the best model.
+
+The RMSE, $R^2$, and MAE were recorded for each model presented above to be compared to find the optimal model to predict `PH`. The linear models produced the worst results, nonlinear produced middle of the road results, and the tree based models achieved the best performance metrics. The best of the best model is the XGBoost with the lowest RMSE (0.10), best $R^2$ (0.66), and lowest MAE (0.07). 
+
+```{r}
+rbind(
+  mars_metrics,
+  knn_metrics,
+  svm_metrics,
+  rpart.metrics,
+  xgb.metrics)
+```
+
+## Variable Importance
+
+The variables that are most impactful for predicting `PH` are `Mnf.Flow`, `Usage.cont`, and `Oxygen.Filter`. The data table exhibits all the variables importance to the XGBoost model. The plot showcases the top 10 contributors to `PH` predictive power.
+
+```{r}
+importance_matrix = xgb.importance(data = train_data, model = xgb.model$finalModel)
+
+importance_matrix
+```
+
+
+```{r}
+xgb.plot.importance(importance_matrix[1:10,])
+```
+
+Let's check individually what each Brand code would come back with for RSqaured and RMSE
+
+```{r}
+
+for (i in unique(train_data$Brand.Code)) {
+
+
+xgb.pred <- predict(xgb.model, newdata = eval_data %>% filter(Brand.Code == i))
+
+d <- eval_data %>% filter(Brand.Code == i)
+
+xgb.metrics <- postResample(pred = exp(xgb.pred), obs = exp(d$PH) )
+
+print(i)
+print(xgb.metrics)
+
+}
+```
+
+
+
+# Predict PH Values
+
+Next, using the SVM model which was identified as the best performing model above, the PH values are predicted with the provided `Test` data set.
+
+
+Next, the predictions for PH are generated using the `predict` function along with the optimal model identified earlier as the XGBoost model.
+
+```{r message=FALSE, warning=FALSE}
+colnames(test_features) <- make.names(colnames(test_features))
+predict <- round(predict(xgb.model, newdata=test_features),2)
+
+pH <- as.data.frame(predict)
+pH <- rename(pH, pH = predict)
+pH$pH <- exp(pH$pH)
+```
+
+
+## Generate Excel file
+
+Finally, the predicted PH values along with the predictor variables are exported to a CSV file using `write_excel_csv`.
+
+```{r message=FALSE, warning=FALSE, eval = FALSE}
+write_excel_csv(pH, "Predictions.csv")
+```
+
+
+<!------- Below is for removing excessive space in Rmarkdown | HTML formatting -------->
+
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 0;"></div>
