@@ -1,0 +1,30 @@
+---
+title: "Takeaways"
+output: html_document
+---
+
+
+### Alpha
+
+When alpha is small, more weight is given to older observations. When alpha is large, most of the weight is applied to newer observations.
+
+In the `Methods with Trends` tab, lower alpha equated to a lower esimate as more weight was given to the values that had a lower Population (older obsevations). A high alpha, in the same tab, proposed an estimate more in line with the more recent observations.
+
+An alpha value of 1 is equal to the naive method for forecasting.
+
+
+### Beta
+
+Beta allows for the forecast to be a linear function, rather than a single value forecast. This parameter changes the slope of the function.
+
+A small beta provides more weight to older trends, whereas a larger beta provides more weight to more recent trends. 
+
+
+### Phi
+
+Phi forces the forecast to converge to a value in the future. Low values of phi experience a strong damping effect. Values close to 1 will closely resemble a non-dampened model, especially in the short term. Generally, phi values are restricted to 0.8 to 1.
+
+
+### Gamma
+
+Bigger gamma values give more weight to recent seasonality. Small gamma values provide a more balanced weight to all previous seasonality.

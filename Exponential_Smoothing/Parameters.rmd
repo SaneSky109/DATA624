@@ -1,0 +1,38 @@
+---
+title: "Parameters"
+output: html_document
+---
+
+
+### Alpha 
+
+
+* Smoothing Parameter that defines weighting for all observations in a series.
+* Alpha is the smoothing coefficient for the level component.
+* The weights decrease exponentially as observations become further and further from y_{T + 1}
+* alpha must range between 0 and 1. 
+* By default in R, alpha is the value that minimizes the Sum of Squared Errors (SSE) for the one-step training errors
+
+### Beta 
+
+
+* Smoothing parameter for the trend. Used to calculate the weighted estimates for the trend.
+* Beta is the smoothing coefficient for the slope component.
+* Also has a range between 0 and 1
+* Cannot be larger than alpha
+* By default in R, Beta is the value that minimizes the Sum of Squared Errors (SSE) for the one-step training errors
+
+
+
+### Phi
+
+* Phi is the damping parameter to add nonlinearity to the forecast. The objective is to have the forecast trend to a flat line in the future.
+* Short term forecasts are trended and long term forecasts reach a constant
+* Phi ranges between 0 and 1
+* In R, this parameter can be optimized by comparing error metrics like MSE and SSE, and log likelihood
+
+### Gamma
+
+* Smoothing parameter for the seasonality component of the forecast.
+* Ranges from 0 to 1, but must be less than 1 - Alpha
+* In R, this parameter can be optimized by comparing error metrics like MSE and SSE
